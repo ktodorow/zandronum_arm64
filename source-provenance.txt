@@ -1,0 +1,2 @@
+git_commit=$Format:%H$
+git_time=$Format:%cI$

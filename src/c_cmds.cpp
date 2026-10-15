@@ -1645,6 +1645,7 @@ CCMD( singleplayer )
 CCMD(version_info)
 {
 	Printf ( "changeset: %s\n", GetGitHash() );
+	Printf ( "port source: %s (%s) @ %s\n", GetPortHash(), GetPortDescription(), GetPortTime() );
 	const time_t hgDate = GetRevisionNumber();
 	Printf ( "date:      %s\n", asctime ( gmtime ( &hgDate ) ) );
 }

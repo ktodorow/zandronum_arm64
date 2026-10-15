@@ -37,6 +37,10 @@
 const char *GetGitDescription();
 const char *GetGitHash();
 const char *GetGitTime();
+// Port provenance is independent of the upstream compatibility identity.
+const char *GetPortDescription();
+const char *GetPortHash();
+const char *GetPortTime();
 const char *GetVersionString();
 // [BB]
 const char *GetVersionStringRev();

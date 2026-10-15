@@ -1,182 +1,149 @@
-/* updaterevision.c
- *
- * Public domain. This program uses git commands command to get
- * various bits of repository status for a particular directory
- * and writes it into a header file so that it can be used for a
- * project's versioning.
+/* Public domain. Generate frozen release identity and separate port provenance.
+ * Run from the source root, as required by the upstream build rules.
  */
-
 #define _CRT_SECURE_NO_DEPRECATE
-
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <errno.h>
-// [BB] New #includes.
 #include <sys/stat.h>
-#include <time.h>
+#include "release_identity.h"
 
 #ifdef _WIN32
 #define popen _popen
 #define pclose _pclose
 #endif
 
-// Used to strip newline characters from lines read by fgets.
-void stripnl(char *str)
+static void stripnl(char *str)
 {
-	if (*str != '\0')
+	str[strcspn(str, "\r\n")] = '\0';
+}
+
+static int valid_source(const char *hash, const char *date)
+{
+	size_t i;
+	if (strlen(hash) != 40 || strlen(date) < 20 || strlen(date) > 32)
+		return 0;
+	for (i = 0; hash[i]; ++i)
+		if (!isxdigit((unsigned char)hash[i]))
+			return 0;
+	for (i = 0; date[i]; ++i)
+		if (!isdigit((unsigned char)date[i]) && !strchr("-:+TZ", date[i]))
+			return 0;
+	return 1;
+}
+
+static int archive_info(char *hash, size_t hashsize, char *date, size_t datesize)
+{
+	char line[128];
+	FILE *stream = fopen("source-provenance.txt", "r");
+	int got = 0;
+	/* git archive expands these fields, including when nested inside another repo. */
+	if (stream != NULL)
 	{
-		size_t len = strlen(str);
-		if (str[len - 1] == '\n')
+		if (fgets(line, sizeof line, stream) && !strncmp(line, "git_commit=", 11))
 		{
-			str[len - 1] = '\0';
+			stripnl(line);
+			snprintf(hash, hashsize, "%s", line + 11);
+			if (fgets(line, sizeof line, stream) && !strncmp(line, "git_time=", 9))
+			{
+				stripnl(line);
+				snprintf(date, datesize, "%s", line + 9);
+				got = valid_source(hash, date);
+			}
 		}
+		fclose(stream);
+		if (got)
+			return 1;
 	}
+	return 0;
+}
+
+static int source_info(char *hash, size_t hashsize, char *date, size_t datesize, int *dirty)
+{
+	char line[128];
+	struct stat gitdir;
+	FILE *stream;
+	int got, status;
+	/* A source-root checkout takes precedence if an archive is imported into Git.
+	 * .git may be a directory or a linked-worktree file. */
+	if (stat(".git", &gitdir) != 0)
+		return archive_info(hash, hashsize, date, datesize);
+	/* Do not accidentally report an enclosing repository's revision. */
+	stream = popen("git rev-parse --show-prefix", "r");
+	if (stream == NULL)
+		return 0;
+	got = fgets(line, sizeof line, stream) != NULL && line[0] == '\n';
+	status = pclose(stream);
+	if (!got || status != 0)
+		return 0;
+	stream = popen("git log -1 --format=\"%H%n%cI\" HEAD", "r");
+	if (stream == NULL)
+		return 0;
+	got = fgets(hash, (int)hashsize, stream) != NULL &&
+		fgets(date, (int)datesize, stream) != NULL;
+	status = pclose(stream);
+	stripnl(hash);
+	stripnl(date);
+	if (!got || status != 0 || !valid_source(hash, date))
+		return 0;
+	stream = popen("git status --porcelain --untracked-files=no", "r");
+	if (stream == NULL)
+		return 0;
+	*dirty = 0;
+	while (fgets(line, sizeof line, stream))
+		*dirty = 1;
+	return pclose(stream) == 0;
 }
 
 int main(int argc, char **argv)
 {
-	char vertag[128], lastlog[128], lasthash[128], *hash = NULL;
-	FILE *stream = NULL;
-	int gotrev = 0, needupdate = 1;
-
-	// [BB]
-	char hgidentify[64];
-	time_t hgdate = 0;
-	int localchanges = 0;
-	hgidentify[0] = '\0';
-
-	vertag[0] = '\0';
-	lastlog[0] = '\0';
-
+	char hash[128] = "", date[128] = "", header[2048], previous[2048];
+	int dirty = 0, length;
+	size_t size;
+	FILE *stream;
 	if (argc != 2)
 	{
 		fprintf(stderr, "Usage: %s <path to gitinfo.h>\n", argv[0]);
 		return 1;
 	}
-
-	// Use git describe --tags to get a version string. If we are sitting directly
-	// on a tag, it returns that tag. Otherwise it returns <most recent tag>-<number of
-	// commits since the tag>-<short hash>.
-	// Use git log to get the time of the latest commit in ISO 8601 format and its full hash.
-	// [BB] Changed to use hg instead of git.
-	stream = popen("hg log --template \"{latesttag}-{latesttagdistance}-{node|short}\\n\" --rev . && hg log -r. --template \"{date|isodatesec}*{node}?{date|hgdate}\\n\" && hg identify -n", "r");
-
-	if (NULL != stream)
+	if (!source_info(hash, sizeof hash, date, sizeof date, &dirty))
 	{
-		if (fgets(vertag, sizeof vertag, stream) == vertag &&
-			fgets(lastlog, sizeof lastlog, stream) == lastlog
-			// [BB] Added to figure out if there are local changes.
-			&& fgets(hgidentify, sizeof hgidentify, stream) == hgidentify)
-		{
-			stripnl(vertag);
-			stripnl(lastlog);
-			gotrev = 1;
-
-			// [BB]
-			if ( strrchr ( hgidentify, '+' ) )
-				localchanges = 1;
-
-			{
-				char *p = strrchr ( lastlog, '?' );
-				if ( p )
-				{
-					*p = 0;
-					hgdate = atoi ( p+1 );
-				}
-			}
-		}
-
-		pclose(stream);
+		fprintf(stderr, "Cannot identify port source. Use a Git checkout or git archive export.\n");
+		return 1;
 	}
-
-	if (gotrev)
-	{
-		hash = strchr(lastlog, '*');
-		if (hash != NULL)
-		{
-			*hash = '\0';
-			hash++;
-
-			// [BB]
-			if ( localchanges )
-			{
-				hash[40] = '+';
-				hash[41] = '\0';
-			}
-		}
-	}
-	if (hash == NULL)
-	{
-		fprintf(stderr, "Failed to get commit info: %s\n", strerror(errno));
-		strcpy(vertag, "<unknown version>");
-		lastlog[0] = '\0';
-		lastlog[1] = '0';
-		lastlog[2] = '\0';
-		hash = lastlog + 1;
-	}
-
-	stream = fopen (argv[1], "r");
+	length = snprintf(header, sizeof header,
+		"// Generated by updaterevision. Do not edit.\n"
+		"// Upstream compatibility is source-derived; gameplay validation pending.\n"
+		"#define GIT_DESCRIPTION \"arm64-%.12s%s\"\n"
+		"#define GIT_HASH \"%s\"\n"
+		"#define GIT_TIME \"%s\"\n"
+		"#define HG_REVISION_NUMBER %lu\n"
+		"#define HG_REVISION_HASH_STRING \"%.12s\"\n"
+		"#define HG_TIME \"%s\"\n",
+		hash, dirty ? "-dirty" : "", hash, date,
+		RELEASE_HG_TIMESTAMP, RELEASE_HG_NODE, RELEASE_HG_TIME);
+	if (length < 0 || (size_t)length >= sizeof header)
+		return 1;
+	stream = fopen(argv[1], "rb");
 	if (stream != NULL)
 	{
-		if (!gotrev)
-		{ // If we didn't get a revision but the file does exist, leave it alone.
-			fclose (stream);
-			return 0;
-		}
-		// Read the revision that's in this file already. If it's the same as
-		// what we've got, then we don't need to modify it and can avoid rebuilding
-		// dependant files.
-		if (fgets(lasthash, sizeof lasthash, stream) == lasthash)
-		{
-			stripnl(lasthash);
-			if (strcmp(hash, lasthash + 3) == 0)
-			{
-				needupdate = 0;
-			}
-		}
-		fclose (stream);
-	}
-
-	if (needupdate)
-	{
-		stream = fopen (argv[1], "w");
-		if (stream == NULL)
-		{
-			return 1;
-		}
-		fprintf(stream,
-"// %s\n"
-"//\n"
-"// This file was automatically generated by the\n"
-"// updaterevision tool. Do not edit by hand.\n"
-"\n"
-"#define GIT_DESCRIPTION \"%s\"\n"
-"#define GIT_HASH \"%s\"\n"
-"#define GIT_TIME \"%s\"\n",
-			hash, vertag, hash, lastlog);
-
-		// [BB] Also save out hg info.
-		fprintf (stream, "#define HG_REVISION_NUMBER %lu\n", (unsigned long)hgdate );
-		// [BB] We use the short hash.
-		hash[12] = 0;
-		fprintf (stream, "#define HG_REVISION_HASH_STRING \"%s\"\n", hash);
-		{
-			struct tm	*lt = gmtime( &hgdate );
-			fprintf (stream, "#define HG_TIME \"%d%02d%02d-%02d%02d", lt->tm_year - 100, lt->tm_mon + 1, lt->tm_mday, lt->tm_hour, lt->tm_min);
-			if ( localchanges )
-				fprintf (stream, "M" );
-			fprintf (stream, "\"\n" );
-		}
-
+		size = fread(previous, 1, sizeof previous, stream);
 		fclose(stream);
-		fprintf(stderr, "%s updated to commit %s.\n", argv[1], vertag);
+		if (size == (size_t)length && !memcmp(previous, header, size))
+			return 0;
 	}
-	else
+	stream = fopen(argv[1], "wb");
+	if (stream == NULL)
 	{
-		fprintf (stderr, "%s is up to date at commit %s.\n", argv[1], vertag);
+		perror(argv[1]);
+		return 1;
 	}
-
+	size = fwrite(header, 1, (size_t)length, stream);
+	if (fclose(stream) != 0 || size != (size_t)length)
+		return 1;
 	return 0;
 }

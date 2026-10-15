@@ -55,6 +55,21 @@ const char *GetGitTime()
 	return HG_TIME; // GIT_TIME;
 }
 
+const char *GetPortDescription()
+{
+	return GIT_DESCRIPTION;
+}
+
+const char *GetPortHash()
+{
+	return GIT_HASH;
+}
+
+const char *GetPortTime()
+{
+	return GIT_TIME;
+}
+
 const char *GetVersionString()
 {
 	// [BB]
