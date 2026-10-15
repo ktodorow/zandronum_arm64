@@ -82,21 +82,16 @@
 #include "decallib.h"
 #include "network/netcommand.h"
 #include "network/servercommands.h"
+#include "maprotation.h"
+#include "voicechat.h"
+#include "d_netinf.h"
+#include "callvote.h"
+#include <memory>
 
 CVAR (Bool, sv_showwarnings, false, CVAR_GLOBALCONFIG|CVAR_ARCHIVE)
 
 EXTERN_CVAR( Float, sv_aircontrol )
-
-//*****************************************************************************
-class AdminClientIterator : public ClientIterator
-{
-protected:
-	bool isCurrentValid() const
-	{
-		return ClientIterator::isCurrentValid() && SERVER_GetClient( **this )->bRCONAccess;
-	}
-};
-
+EXTERN_CVAR( Bool, sv_unlimited_pickup )
 
 //*****************************************************************************
 //	FUNCTIONS
@@ -107,9 +102,9 @@ bool EnsureActorHasNetID( const AActor *pActor )
 	if ( pActor == NULL )
 		return false;
 
-	if ( pActor->lNetID == -1 )
+	if ( pActor->NetID == 0 )
 	{
-		if ( sv_showwarnings && !( pActor->ulNetworkFlags & NETFL_SERVERSIDEONLY ) )
+		if ( sv_showwarnings && !( pActor->NetworkFlags & NETFL_SERVERSIDEONLY ) )
 			Printf ( "Warning: Actor %s doesn't have a netID and therefore can't be manipulated online!\n", pActor->GetClass()->TypeName.GetChars() );
 		return false;
 	}
@@ -200,12 +195,51 @@ void CheckPositionReuse( AActor *pActor, ULONG &ulBits )
 		ulBits |= CM_REUSE_Z;
 	}
 }
+
 //*****************************************************************************
 //
-void SERVERCOMMANDS_Ping( ULONG ulTime )
+// [AK] Checks if two players are teammates.
+bool PlayersAreTeammates( const unsigned int playerOne, const unsigned int playerTwo )
+{
+	const bool playerOneSpectating = PLAYER_IsTrueSpectator( &players[playerOne] );
+	const bool playerTwoSpectating = PLAYER_IsTrueSpectator( &players[playerTwo] );
+
+	// If either player is not on a team, return false.
+	if ((( players[playerOne].bOnTeam == false ) || ( players[playerTwo].bOnTeam == false )) && (( playerOneSpectating == false ) || ( playerTwoSpectating == false )))
+		return false;
+
+	// If the players are not on the same team, return false.
+	if (( players[playerOne].Team != players[playerTwo].Team ) && (( playerOneSpectating != playerTwoSpectating ) || ( playerTwoSpectating == false )))
+		return false;
+
+	return true;
+}
+
+//*****************************************************************************
+//
+// [AK] Sends a private message sent to/from the server to all in-game RCON clients.
+void SendPrivateMessageToRCONClients( ServerCommands::PlayerSay &command, ULONG ulPlayer, bool bServerSent )
+{
+	command.SetPlayerNumber( ulPlayer );
+	command.SetMode( bServerSent ? CHATMODE_PRIVATE_RCON_SEND : CHATMODE_PRIVATE_RCON_RECEIVE );
+
+	for ( ULONG ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
+	{
+		if ( SERVER_IsValidClient( ulIdx ) == false )
+			continue;
+
+		// [AK] Also ignore the player who sent/received the message.
+		if (( ulIdx != ulPlayer ) && ( SERVER_GetClient( ulIdx )->bRCONAccess ))
+			command.sendCommandToClients( ulIdx, SVCF_ONLYTHISCLIENT );
+	}
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_Ping( unsigned int time )
 {
 	ServerCommands::Ping command;
-	command.SetTime( ulTime );
+	command.SetTime( time );
 	command.sendCommandToClients();
 }
 
@@ -253,12 +287,10 @@ void SERVERCOMMANDS_SpawnPlayer( ULONG ulPlayer, LONG lPlayerState, ULONG ulPlay
 	command.SetPlayer( &players[ulPlayer] );
 	command.SetPriorState( lPlayerState );
 	command.SetIsBot( players[ulPlayer].bIsBot );
-	// Do we really need to send this? Shouldn't it always be PST_LIVE?
-	command.SetPlayerState( players[ulPlayer].playerstate );
 	command.SetIsSpectating( players[ulPlayer].bSpectating );
 	command.SetIsDeadSpectator( players[ulPlayer].bDeadSpectator );
 	command.SetIsMorphed( bMorph );
-	command.SetNetid( players[ulPlayer].mo->lNetID );
+	command.SetNetid( players[ulPlayer].mo->NetID );
 	command.SetAngle( players[ulPlayer].mo->angle );
 	command.SetX( players[ulPlayer].mo->x );
 	command.SetY( players[ulPlayer].mo->y );
@@ -281,20 +313,38 @@ void SERVERCOMMANDS_SpawnPlayer( ULONG ulPlayer, LONG lPlayerState, ULONG ulPlay
 //
 void SERVERCOMMANDS_MovePlayer( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
-	ULONG ulPlayerAttackFlags = 0;
+	ULONG ulPlayerFlags = 0;
 
 	if ( PLAYER_IsValidPlayerWithMo( ulPlayer ) == false )
 		return;
 
 	// [BB] Check if ulPlayer is pressing any attack buttons.
 	if ( players[ulPlayer].cmd.ucmd.buttons & BT_ATTACK )
-		ulPlayerAttackFlags |= PLAYER_ATTACK;
+		ulPlayerFlags |= PLAYER_ATTACK;
 	if ( players[ulPlayer].cmd.ucmd.buttons & BT_ALTATTACK )
-		ulPlayerAttackFlags |= PLAYER_ALTATTACK;
+		ulPlayerFlags |= PLAYER_ALTATTACK;
+
+	// [AK] Check if the player is crouching.
+	if ( players[ulPlayer].crouchdir >= 0 )
+		ulPlayerFlags |= PLAYER_CROUCHING;
+
+	// [AK] Ideally, we should only need to send the player's velocity if it's not zero.
+	// Otherwise, the client can set the velocity to zero by themselves.
+	if ( players[ulPlayer].mo->velx )
+		ulPlayerFlags |= PLAYER_SENDVELX;
+	if ( players[ulPlayer].mo->vely )
+		ulPlayerFlags |= PLAYER_SENDVELY;
+	if ( players[ulPlayer].mo->velz )
+		ulPlayerFlags |= PLAYER_SENDVELZ;
+
+	// [AK] Check if the player is standing on a moving lift. This tells clients to clamp the player onto
+	// the floor of whatever sector they end up in, making them not appeary jittery on lifts moving downward.
+	if (( players[ulPlayer].mo->z <= players[ulPlayer].mo->floorz ) && ( players[ulPlayer].mo->floorsector->floordata ))
+		ulPlayerFlags |= PLAYER_ONLIFT;
 
 	ServerCommands::MovePlayer fullCommand;
 	fullCommand.SetPlayer ( &players[ulPlayer] );
-	fullCommand.SetFlags( ulPlayerAttackFlags | PLAYER_VISIBLE );
+	fullCommand.SetFlags( ulPlayerFlags | PLAYER_VISIBLE );
 	fullCommand.SetX( players[ulPlayer].mo->x );
 	fullCommand.SetY( players[ulPlayer].mo->y );
 	fullCommand.SetZ( players[ulPlayer].mo->z );
@@ -302,10 +352,9 @@ void SERVERCOMMANDS_MovePlayer( ULONG ulPlayer, ULONG ulPlayerExtra, ServerComma
 	fullCommand.SetVelx( players[ulPlayer].mo->velx );
 	fullCommand.SetVely( players[ulPlayer].mo->vely );
 	fullCommand.SetVelz( players[ulPlayer].mo->velz );
-	fullCommand.SetIsCrouching(( players[ulPlayer].crouchdir >= 0 ) ? true : false );
 
 	ServerCommands::MovePlayer stubCommand = fullCommand;
-	stubCommand.SetFlags( ulPlayerAttackFlags );
+	stubCommand.SetFlags( ulPlayerFlags );
 
 	for ( ClientIterator it ( ulPlayerExtra, flags ); it.notAtEnd(); ++it )
 	{
@@ -322,6 +371,8 @@ void SERVERCOMMANDS_DamagePlayer( ULONG ulPlayer )
 {
 	ULONG		ulArmorPoints;
 	AInventory	*pArmor;
+	PalEntry	painFlash;
+	bool		bSendDamageType = false;
 
 	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
 		return;
@@ -336,6 +387,12 @@ void SERVERCOMMANDS_DamagePlayer( ULONG ulPlayer )
 
 		// If the player doesn't possess any armor, then his armor points are 0.
 		ulArmorPoints = ( pArmor != NULL ) ? pArmor->Amount : 0;
+
+		// [AK] Check if the player's class has a special pain flash for the damage type they just
+		// received. If it does, then we'll also send the damage type under a different command so
+		// that the pain flash appears properly on the client's screen.
+		if ( players[ulPlayer].mo->GetClass( )->ActorInfo->GetPainFlash( players[ulPlayer].mo->DamageTypeReceived, &painFlash ))
+			bSendDamageType = true;
 	}
 
 	ServerCommands::DamagePlayer fullCommand;
@@ -349,8 +406,29 @@ void SERVERCOMMANDS_DamagePlayer( ULONG ulPlayer )
 		// [EP] Send the updated health and armor of the player who's being damaged to this client
 		// only if this client is allowed to know.
 		if ( SERVER_IsPlayerAllowedToKnowHealth( *it, ulPlayer ))
-			fullCommand.sendCommandToClients( *it, SVCF_ONLYTHISCLIENT );
+		{
+			// [AK] If we're going to send the damage type, make sure that this client is watching the
+			// player. Otherwise, they don't need to know the damage type.
+			if (( bSendDamageType ) && ( SERVER_GetClient( *it )->ulDisplayPlayer == ulPlayer ))
+				SERVERCOMMANDS_DamagePlayerWithType( ulPlayer, ulArmorPoints, *it );
+			else
+				fullCommand.sendCommandToClients( *it, SVCF_ONLYTHISCLIENT );
+		}
 	}
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_DamagePlayerWithType( ULONG ulPlayer, ULONG ulArmorPoints, ULONG ulPlayerExtra )
+{
+	ServerCommands::DamagePlayerWithType command;
+	command.SetPlayer( &players[ulPlayer] );
+	command.SetHealth( players[ulPlayer].health );
+	command.SetArmor( ulArmorPoints );
+	command.SetDamageType( players[ulPlayer].mo->DamageTypeReceived.GetChars() );
+	command.SetAttacker( players[ulPlayer].attacker );
+
+	command.sendCommandToClients( ulPlayerExtra, SVCF_ONLYTHISCLIENT );
 }
 
 //*****************************************************************************
@@ -441,12 +519,13 @@ void SERVERCOMMANDS_SetPlayerHealthAndMaxHealthBonus( ULONG ulPlayer, ULONG ulPl
 		return;
 
 	// [BB] Workaround to set max health bonus for the player on the client(s).
-	if ( players[ulPlayer].lMaxHealthBonus > 0 ) {
+	if ( players[ulPlayer].MaxHealthBonus > 0 ) {
 		AInventory *pInventory = Spawn<AMaxHealth>(0,0,0, NO_REPLACE);
 		if ( pInventory )
 		{
-			pInventory->Amount = players[ulPlayer].lMaxHealthBonus;
-			SERVERCOMMANDS_GiveInventory( ulPlayer, pInventory, ulPlayerExtra, flags );
+			pInventory->Amount = players[ulPlayer].MaxHealthBonus;
+			pInventory->MaxAmount = pInventory->Amount + players[ulPlayer].mo->StartHealth; // [RK] Set the current max health.
+			SERVERCOMMANDS_GiveInventory( ulPlayer, pInventory, ulPlayerExtra, flags, true ); // [RK] Send extra value
 			pInventory->Destroy ();
 			pInventory = NULL;
 		}
@@ -470,7 +549,8 @@ void SERVERCOMMANDS_SetPlayerArmorAndMaxArmorBonus( ULONG ulPlayer, ULONG ulPlay
 		if ( pInventory )
 		{
 			pInventory->Amount = pArmor->BonusCount;
-			SERVERCOMMANDS_GiveInventory( ulPlayer, pInventory, ulPlayerExtra, flags );
+			pInventory->MaxAmount = pArmor->MaxAmount; // [RK] Set the current BonusMax ammount.
+			SERVERCOMMANDS_GiveInventory( ulPlayer, pInventory, ulPlayerExtra, flags, true ); // [RK] Send extra value
 			pInventory->Destroy ();
 			pInventory = NULL;
 		}
@@ -529,7 +609,7 @@ void SERVERCOMMANDS_SetPlayerUserInfo( ULONG ulPlayer, const std::set<FName> &na
 			element.name = name;
 			// [BB] Skin needs special treatment, so that the clients can use skins the server doesn't have.
 			if ( name == NAME_Skin )
-				element.value = SERVER_GetClient( ulPlayer )->szSkin;
+				element.value = SERVER_GetClient( ulPlayer )->skinName;
 			else
 				element.value = cvar->GetGenericRep( CVAR_String ).String;
 
@@ -552,6 +632,22 @@ void SERVERCOMMANDS_SetPlayerUserInfo( ULONG ulPlayer, const std::set<FName> &na
 
 //*****************************************************************************
 //
+void SERVERCOMMANDS_SetPlayerCountry( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	ServerCommands::SetPlayerCountry command;
+	command.SetPlayer( &players[ulPlayer] );
+
+	// [AK] Set the country to "N/A" if the player so wishes.
+	if ( SERVER_GetClient( ulPlayer )->bWantHideCountry )
+		command.SetCountry( 0 );
+	else
+		command.SetCountry( players[ulPlayer].ulCountryIndex );
+
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
 void SERVERCOMMANDS_SetPlayerAccountName( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	ServerCommands::SetPlayerAccountName command;
@@ -562,6 +658,19 @@ void SERVERCOMMANDS_SetPlayerAccountName( ULONG ulPlayer, ULONG ulPlayerExtra, S
 	else
 		command.SetAccountName( SERVER_GetClient( ulPlayer )->GetAccountName() );
 	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+void SERVERCOMMANDS_SetPlayerACSSkin( const unsigned int player, const unsigned int playerExtra, ServerCommandFlags flags )
+{
+	if ( PLAYER_IsValidPlayer( player ) == false )
+		return;
+
+	ServerCommands::SetPlayerACSSkin command;
+	command.SetPlayer( &players[player] );
+	command.SetSkinName( players[player].ACSSkin );
+	command.SetOverrideWeaponSkin( players[player].ACSSkinOverridesWeaponSkin );
+	command.sendCommandToClients( playerExtra, flags );
 }
 
 //*****************************************************************************
@@ -605,6 +714,19 @@ void SERVERCOMMANDS_SetPlayerWins( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCo
 
 //*****************************************************************************
 //
+void SERVERCOMMANDS_SetPlayerDeaths( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
+		return;
+
+	ServerCommands::SetPlayerDeaths command;
+	command.SetPlayer( &players[ulPlayer] );
+	command.SetDeaths( players[ulPlayer].ulDeathCount );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
 void SERVERCOMMANDS_SetPlayerKillCount( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
@@ -618,42 +740,12 @@ void SERVERCOMMANDS_SetPlayerKillCount( ULONG ulPlayer, ULONG ulPlayerExtra, Ser
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_SetPlayerChatStatus( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_SetPlayerStatus( const unsigned int player, const unsigned int playerExtra, ServerCommandFlags flags )
 {
-	ServerCommands::SetPlayerChatStatus command;
-	command.SetPlayer( &players[ulPlayer] );
-	command.SetChatting( players[ulPlayer].bChatting );
-	command.sendCommandToClients( ulPlayerExtra, flags );
-}
-
-//*****************************************************************************
-//
-void SERVERCOMMANDS_SetPlayerLaggingStatus( ULONG ulPlayer )
-{
-	ServerCommands::SetPlayerLaggingStatus command;
-	command.SetPlayer( &players[ulPlayer] );
-	command.SetLagging( players[ulPlayer].bLagging );
-	command.sendCommandToClients();
-}
-
-//*****************************************************************************
-//
-void SERVERCOMMANDS_SetPlayerConsoleStatus( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
-{
-	ServerCommands::SetPlayerConsoleStatus command;
-	command.SetPlayer( &players[ulPlayer] );
-	command.SetInConsole( players[ulPlayer].bInConsole );
-	command.sendCommandToClients( ulPlayerExtra, flags );
-}
-
-//*****************************************************************************
-//
-void SERVERCOMMANDS_SetPlayerReadyToGoOnStatus( ULONG ulPlayer )
-{
-	ServerCommands::SetPlayerReadyToGoOnStatus command;
-	command.SetPlayer( &players[ulPlayer] );
-	command.SetReadyToGoOn( players[ulPlayer].bReadyToGoOn );
-	command.sendCommandToClients();
+	ServerCommands::SetPlayerStatus command;
+	command.SetPlayer( &players[player] );
+	command.SetStatuses( players[player].statuses );
+	command.sendCommandToClients( playerExtra, flags );
 }
 
 //*****************************************************************************
@@ -669,7 +761,7 @@ void SERVERCOMMANDS_SetPlayerTeam( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCo
 	if ( players[ulPlayer].bOnTeam == false )
 		command.SetTeam( teams.Size( ));
 	else
-		command.SetTeam( players[ulPlayer].ulTeam );
+		command.SetTeam( players[ulPlayer].Team );
 
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
@@ -871,9 +963,43 @@ void SERVERCOMMANDS_UpdatePlayerPing( ULONG ulPlayer, ULONG ulPlayerExtra, Serve
 	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
 		return;
 
+	CLIENT_s *const client = SERVER_GetClient( ulPlayer );
+	unsigned int connectionStrength = 4;
+
+	// [AK] Update the client's connection strength according to how many packets
+	// they missed since the last ping update. The levels work as follows:
+	//
+	// 10 or more = severe (red, one bar)
+	// 7-9 = high (orange, two bars)
+	// 4-6 = moderate (yellow, three bars)
+	// 0-3 = low (green, four bars)
+	//
+	// If they're lagging, then always set their connection strength to lowest.
+	if ( players[ulPlayer].statuses & PLAYERSTATUS_LAGGING )
+	{
+		connectionStrength = 1;
+	}
+	else if ( client->numMissingPackets > 0 )
+	{
+		const unsigned int packetLossLevels[3] = { 10, 7, 4 };
+
+		for ( unsigned int i = 0; i < 3; i++ )
+		{
+			if ( client->numMissingPackets >= packetLossLevels[i] )
+			{
+				connectionStrength = i + 1;
+				break;
+			}
+		}
+
+		// [AK] Reset the counter.
+		client->numMissingPackets = 0;
+	}
+
 	ServerCommands::UpdatePlayerPing command;
 	command.SetPlayer( &players[ulPlayer] );
 	command.SetPing( players[ulPlayer].ulPing );
+	command.SetConnectionStrength( connectionStrength );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
@@ -914,15 +1040,34 @@ void SERVERCOMMANDS_MoveLocalPlayer( ULONG ulPlayer )
 	if ( SERVER_IsValidClient( ulPlayer ) == false || players[ulPlayer].mo == NULL )
 		return;
 
+	CLIENT_s *pClient = SERVER_GetClient( ulPlayer );
+
 	ServerCommands::MoveLocalPlayer command;
-	command.SetClientTicOnServerEnd( SERVER_GetClient( ulPlayer )->ulClientGameTic );
 	command.SetLatestServerGametic( gametic );
-	command.SetX( players[ulPlayer].mo->x );
-	command.SetY( players[ulPlayer].mo->y );
-	command.SetZ( players[ulPlayer].mo->z );
-	command.SetVelx( players[ulPlayer].mo->velx );
-	command.SetVely( players[ulPlayer].mo->vely );
-	command.SetVelz( players[ulPlayer].mo->velz );
+
+	// [AK] If this player is being extrapolated, send them their last known position and velocity.
+	// This helps keep their movement smooth for them until we receive commands from them again.
+	if (( pClient->ulExtrapolatedTics > 0 ) && ( pClient->OldData ))
+	{
+		command.SetClientTicOnServerEnd( pClient->LastMoveCMD->getClientTic( ));
+		command.SetX( pClient->OldData->PositionData.x );
+		command.SetY( pClient->OldData->PositionData.y );
+		command.SetZ( pClient->OldData->PositionData.z );
+		command.SetVelx( pClient->OldData->PositionData.velx );
+		command.SetVely( pClient->OldData->PositionData.vely );
+		command.SetVelz( pClient->OldData->PositionData.velz );
+	}
+	else
+	{
+		command.SetClientTicOnServerEnd( pClient->ulClientGameTic );
+		command.SetX( players[ulPlayer].mo->x );
+		command.SetY( players[ulPlayer].mo->y );
+		command.SetZ( players[ulPlayer].mo->z );
+		command.SetVelx( players[ulPlayer].mo->velx );
+		command.SetVely( players[ulPlayer].mo->vely );
+		command.SetVelz( players[ulPlayer].mo->velz );
+	}
+
 	command.sendCommandToClients( ulPlayer, SVCF_ONLYTHISCLIENT );
 }
 
@@ -930,13 +1075,27 @@ void SERVERCOMMANDS_MoveLocalPlayer( ULONG ulPlayer )
 //
 void SERVERCOMMANDS_SetLocalPlayerJumpTics( ULONG ulPlayer )
 {
-	if ( SERVER_IsValidClient( ulPlayer ) == false )
+	// [AK] Don't update this client's jump tics while we're extrapolating their movement.
+	if (( SERVER_IsValidClient( ulPlayer ) == false ) || ( SERVER_GetClient( ulPlayer )->ulExtrapolatedTics > 0 ))
 		return;
 
 	ServerCommands::SetLocalPlayerJumpTics command;
 	command.SetClientTicOnServerEnd( SERVER_GetClient( ulPlayer )->ulClientGameTic );
 	command.SetJumpTics( players[ulPlayer].jumpTics );
 	command.sendCommandToClients( ulPlayer, SVCF_ONLYTHISCLIENT );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetLocalPlayerRespawnDelayTime( unsigned int player )
+{
+	if ( PLAYER_IsValidPlayer( player ) == false )
+		return;
+
+	ServerCommands::SetLocalPlayerRespawnDelayTime command;
+	command.SetRespawnDelayTics( players[player].respawn_time - level.time );
+	command.SetSpawnTelefragged( players[player].bSpawnTelefragged );
+	command.sendCommandToClients( player, SVCF_ONLYTHISCLIENT );
 }
 
 //*****************************************************************************
@@ -976,16 +1135,61 @@ void SERVERCOMMANDS_ConsolePlayerKicked( ULONG ulPlayer )
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_GivePlayerMedal( ULONG ulPlayer, ULONG ulMedal, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_GivePlayerMedal( const unsigned int player, const unsigned int medal, const bool silent, const unsigned int playerExtra, ServerCommandFlags flags )
 {
-	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
+	if ( PLAYER_IsValidPlayer( player ) == false )
 		return;
 
 	ServerCommands::GivePlayerMedal command;
-	command.SetPlayer( &players[ulPlayer] );
-	command.SetMedal( ulMedal );
-	command.sendCommandToClients( ulPlayerExtra, flags );
+	command.SetPlayer( &players[player] );
+	command.SetMedal( medal );
+	command.SetSilent( silent );
+	command.sendCommandToClients( playerExtra, flags );
 }
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SyncPlayerMedalCounts( const unsigned int playerExtra, ServerCommandFlags flags )
+{
+	for ( unsigned int i = 0; i < MAXPLAYERS; i++ )
+	{
+		// [AK] Ignore players that don't exist.
+		if ( PLAYER_IsValidPlayer( i ) == false )
+			continue;
+
+		TArray<MEDAL_t *> medalList;
+		MEDAL_RetrieveAwardedMedals( i, medalList );
+
+		// [AK] Don't send a command if this player hasn't earned any medals yet.
+		if ( medalList.Size( ) == 0 )
+			continue;
+
+		ServerCommands::SyncPlayerMedalCounts command;
+		command.SetPlayer( i );
+
+		for ( unsigned int j = 0; j < medalList.Size( ); j++ )
+		{
+			ServerCommands::Medal medal;
+			medal.index = MEDAL_GetMedalIndex( medalList[j]->name );
+			medal.count = medalList[j]->awardedCount[i];
+
+			command.PushToMedals( medal );
+
+			// [AK] If this entry won't fit into a single packet, send out what we
+			// already have and then send another packet containing this entry and more.
+			if ( static_cast<unsigned>( command.BuildNetCommand( ).calcSize( ) + PACKET_HEADER_SIZE ) >= SERVER_GetMaxPacketSize( ))
+			{
+				command.PopFromMedals( medal );
+				command.sendCommandToClients( playerExtra, flags );
+				command.ClearMedals( );
+				command.PushToMedals( medal );
+			}
+		}
+
+		command.sendCommandToClients( playerExtra, flags );
+	}
+}
+
 
 //*****************************************************************************
 //
@@ -1028,21 +1232,128 @@ void SERVERCOMMANDS_PlayerSay( ULONG ulPlayer, const char *pszString, ULONG ulMo
 		// The player is sending a message to his teammates.
 		if ( ulMode == CHATMODE_TEAM )
 		{
-			if ( GAMEMODE_GetCurrentFlags() & GMF_PLAYERSONTEAMS )
-			{
-				// If either player is not on a team, don't send the message.
-				if ( (( players[*it].bOnTeam == false ) || ( players[ulPlayer].bOnTeam == false ))
-					&& (( PLAYER_IsTrueSpectator ( &players[*it] ) == false ) || ( PLAYER_IsTrueSpectator ( &players[ulPlayer] ) == false )) )
-					continue;
-
-				// If the players are not on the same team, don't send the message.
-				if ( ( players[*it].ulTeam != players[ulPlayer].ulTeam ) && ( ( PLAYER_IsTrueSpectator ( &players[*it] ) != PLAYER_IsTrueSpectator ( &players[ulPlayer] ) ) || ( PLAYER_IsTrueSpectator ( &players[*it] ) == false ) ) )
-					continue;
-			}
-			// Not in a team mode.
-			else
+			// [AK] Skip if we're not in a team mode, or if this player isn't a teammate.
+			if ((( GAMEMODE_GetCurrentFlags( ) & GMF_PLAYERSONTEAMS ) == false ) || ( PlayersAreTeammates( ulPlayer, *it ) == false ))
 				continue;
 		}
+
+		command.sendCommandToClients( *it, SVCF_ONLYTHISCLIENT );
+	}
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_PrivateSay( ULONG ulSender, ULONG ulReceiver, const char *pszString, bool bForbidChatToPlayers, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if ( ulSender != MAXPLAYERS )
+	{
+		if ( PLAYER_IsValidPlayer( ulSender ) == false )
+			return;
+
+		// [AK] Spectators cannot send private messages to the server or non-spectators when the chat is restricted.
+		if (( bForbidChatToPlayers ) && (( ulReceiver == MAXPLAYERS ) || ( players[ulReceiver].bSpectating == false )))
+		{
+			SERVER_PrintfPlayer( ulSender, "You can't send any private messages to %s right now.\n",
+				( ulReceiver == MAXPLAYERS ) ? "the server" : players[ulReceiver].userinfo.GetName() );
+			return;
+		}
+	}
+
+	ServerCommands::PlayerSay command;
+	command.SetMessage( pszString );
+
+	// [AK] First send the command to the player receiving the message.
+	if ( ulReceiver != MAXPLAYERS )
+	{
+		// [AK] Don't send the command if the sender is supposed to be ignoring the player who receives the message.
+		if (( ulSender != MAXPLAYERS ) && ( SERVER_GetPlayerIgnoreTic( ulSender, SERVER_GetClient( ulReceiver )->Address, false ) != 0 ))
+		{
+			SERVER_PrintfPlayer( ulSender, "You have ignored %s on your end, so you can't send any private messages to them.\n",
+				players[ulReceiver].userinfo.GetName() );
+			return;
+		}
+
+		// [AK] Don't send the command to the receiver if they're supposed to be ignoring the player who sent the
+		// message. We'll still send the command back to the sender so they can't know if they've been ignored.
+		if (( ulSender == MAXPLAYERS ) || ( SERVER_GetPlayerIgnoreTic( ulReceiver, SERVER_GetClient( ulSender )->Address, false ) == 0 ))
+		{
+			command.SetPlayerNumber( ulSender );
+			command.SetMode( CHATMODE_PRIVATE_RECEIVE );
+			command.sendCommandToClients( ulReceiver, SVCF_ONLYTHISCLIENT );
+		}
+	}
+	else
+	{
+		// [AK] Tell in-game RCON clients that the server received a private message from somebody.
+		SendPrivateMessageToRCONClients( command, ulSender, false );
+	}
+
+	// [AK] Next, send the command back to the player who sent the message.
+	if ( ulSender != MAXPLAYERS )
+	{
+		command.SetPlayerNumber( ulReceiver );
+		command.SetMode( CHATMODE_PRIVATE_SEND );
+		command.sendCommandToClients( ulSender, SVCF_ONLYTHISCLIENT );
+	}
+	else
+	{
+		// [AK] Tell in-game RCON clients that the server sent a private message to somebody.
+		SendPrivateMessageToRCONClients( command, ulReceiver, true );
+	}
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_PlayerVoIPAudioPacket( ULONG player, unsigned int frame, unsigned char *data, unsigned int length, ULONG playerExtra, ServerCommandFlags flags )
+{
+	if (( sv_allowvoicechat == VOICECHAT_OFF ) || ( PLAYER_IsValidPlayer( player ) == false ) || ( data == nullptr ) || ( length == 0 ))
+		return;
+
+	// [AK] Potentially prevent spectators from talking to active players during LMS games.
+	const bool forbidVoiceChatToPlayers = GAMEMODE_IsClientForbiddenToChatToPlayers( player, true );
+	const int transmitFilter = players[player].userinfo.GetVoiceTransmitFilter( );
+
+	BufferParameter audio( data, length );
+	ServerCommands::PlayerVoIPAudioPacket command;
+	command.SetPlayerNumber( player );
+	command.SetFrame( frame );
+	command.SetAudio( audio );
+
+	for ( ClientIterator it( playerExtra, flags ); it.notAtEnd( ); ++it )
+	{
+		// [AK] Don't broadcast to the same player that sent the VoIP packet,
+		// or any players that don't want to receive VoIP packets.
+		if (( *it == player ) || ( players[*it].userinfo.GetVoiceEnable( ) == VOICEMODE_OFF ))
+			continue;
+
+		// [AK] Don't broadcast to any live players if they're forbidden.
+		if (( forbidVoiceChatToPlayers ) && ( players[*it].bSpectating == false ))
+			continue;
+
+		const int listenFilter = players[*it].userinfo.GetVoiceListenFilter( );
+
+		// [AK] Don't broadcast to any player that aren't teammates if required.
+		if (( GAMEMODE_GetCurrentFlags( ) & GMF_PLAYERSONTEAMS ) &&
+			(( sv_allowvoicechat == VOICECHAT_TEAMMATESONLY ) ||
+			( transmitFilter == VOICEFILTER_TEAMMATESONLY ) ||
+			( listenFilter == VOICEFILTER_TEAMMATESONLY )))
+		{
+			if ( PlayersAreTeammates( player, *it ) == false )
+				continue;
+		}
+
+		// [AK] ...or to live players if the sender is a spectator and vice versa.
+		if (( sv_allowvoicechat == VOICECHAT_PLAYERS_OR_SPECTATORS_ONLY ) ||
+			( transmitFilter == VOICEFILTER_PLAYERS_OR_SPECTATORS_ONLY ) ||
+			( listenFilter == VOICEFILTER_PLAYERS_OR_SPECTATORS_ONLY ))
+		{
+			if ( players[player].bSpectating != players[*it].bSpectating )
+				continue;
+		}
+
+		// [AK] Don't broadcast to anyone that ignored this player's voice.
+		if ( SERVER_GetPlayerIgnoreTic( *it, SERVER_GetClient( player )->Address, true ) != 0 )
+			continue;
 
 		command.sendCommandToClients( *it, SVCF_ONLYTHISCLIENT );
 	}
@@ -1056,18 +1367,6 @@ void SERVERCOMMANDS_PlayerTaunt( ULONG ulPlayer, ULONG ulPlayerExtra, ServerComm
 		return;
 
 	ServerCommands::PlayerTaunt command;
-	command.SetPlayer( &players[ulPlayer] );
-	command.sendCommandToClients( ulPlayerExtra, flags );
-}
-
-//*****************************************************************************
-//
-void SERVERCOMMANDS_PlayerRespawnInvulnerability( ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
-{
-	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
-		return;
-
-	ServerCommands::PlayerRespawnInvulnerability command;
 	command.SetPlayer( &players[ulPlayer] );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
@@ -1106,21 +1405,50 @@ void SERVERCOMMANDS_PlayerDropInventory( ULONG ulPlayer, AInventory *pItem, ULON
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_PotentiallyIgnorePlayer( ULONG ulPlayer )
+void SERVERCOMMANDS_PotentiallySendPlayerCommRule( const unsigned int player )
 {
-	for ( ClientIterator it; it.notAtEnd(); ++it )
+	const NETADDRESS_s address = SERVER_GetClient( player )->Address;
+
+	for ( ClientIterator it; it.notAtEnd( ); ++it )
 	{
-		// Check whether this player is ignoring the newcomer's address.
-		LONG lTicks = SERVER_GetPlayerIgnoreTic( *it, SERVER_GetClient( ulPlayer )->Address );
+		SERVER_GetClient( *it )->UpdateCommRules( );
 
-		if ( lTicks == 0 )
-			continue;
+		std::list<ClientCommRule> &list = SERVER_GetClient( *it )->commRules;
 
-		NetCommand command( SVC_IGNOREPLAYER );
-		command.addByte( ulPlayer );
-		command.addLong( lTicks );
-		command.sendCommandToOneClient( *it );
+		for ( std::list<ClientCommRule>::iterator i = list.begin( ); i != list.end( ); i++ )
+		{
+			if ( i->address.CompareNoPort( address ))
+			{
+				ServerCommands::SendPlayerCommRule command;
+				command.SetPlayer( &players[player] );
+				command.SetIgnoreChat( i->ignoreChat );
+				command.SetIgnoreVoice( i->ignoreVoice );
+				command.SetSendVoIPChannelVolume( i->VoIPChannelVolume != 1.0f );
+				command.SetIgnoreChatTicks( i->ignoreChat ? SERVER_GetPlayerIgnoreTic( *it, address, false ) : 0 );
+				command.SetIgnoreVoiceTicks( i->ignoreVoice ? SERVER_GetPlayerIgnoreTic( *it, address, true ) : 0 );
+				command.SetVoIPChannelVolume( i->VoIPChannelVolume );
+				command.sendCommandToClients( *it, SVCF_ONLYTHISCLIENT );
+
+				break;
+			}
+		}
 	}
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_IgnoreLocalPlayer( const unsigned int player, const bool ignore, const bool doVoice, const int ticks, const char *reason )
+{
+	if ( PLAYER_IsValidPlayer( player ) == false )
+		return;
+
+	ServerCommands::IgnoreLocalPlayer command;
+	command.SetPlayer( &players[player] );
+	command.SetIgnore( ignore );
+	command.SetDoVoice( doVoice );
+	command.SetTicks( ticks );
+	command.SetReason( reason );
+	command.sendCommandToClients( player, SVCF_ONLYTHISCLIENT );
 }
 
 //*****************************************************************************
@@ -1131,7 +1459,7 @@ void SERVERCOMMANDS_SpawnThing( AActor *pActor, ULONG ulPlayerExtra, ServerComma
 		return;
 
 	// If the actor doesn't have a network ID, it's better to send it ID-less.
-	if ( pActor->lNetID == -1 )
+	if ( pActor->NetID == 0 )
 	{
 		SERVERCOMMANDS_SpawnThingNoNetID( pActor, ulPlayerExtra, flags );
 		return;
@@ -1142,10 +1470,10 @@ void SERVERCOMMANDS_SpawnThing( AActor *pActor, ULONG ulPlayerExtra, ServerComma
 	command.SetX( pActor->x );
 	command.SetY( pActor->y );
 	command.SetZ( pActor->z );
-	command.SetId( pActor->lNetID );
+	command.SetId( pActor->NetID );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 
-	if ( pActor->ulSTFlags & STFL_LEVELSPAWNED )
+	if ( pActor->STFlags & STFL_LEVELSPAWNED )
 	{
 		SERVERCOMMANDS_SetThingFlags( pActor, FLAGSET_FLAGS, ulPlayerExtra, flags );
 	}
@@ -1158,7 +1486,7 @@ void SERVERCOMMANDS_SpawnThingNoNetID( AActor *pActor, ULONG ulPlayerExtra, Serv
 	if ( pActor == NULL )
 		return;
 
-	if ( pActor->ulNetworkFlags & NETFL_SERVERSIDEONLY )
+	if ( pActor->NetworkFlags & NETFL_SERVERSIDEONLY )
 		return;
 
 	ServerCommands::SpawnThingNoNetID command;
@@ -1177,7 +1505,7 @@ void SERVERCOMMANDS_SpawnThingExact( AActor *pActor, ULONG ulPlayerExtra, Server
 		return;
 
 	// If the actor doesn't have a network ID, it's better to send it ID-less.
-	if ( pActor->lNetID == -1 )
+	if ( pActor->NetID == 0 )
 	{
 		SERVERCOMMANDS_SpawnThingExactNoNetID( pActor, ulPlayerExtra, flags );
 		return;
@@ -1188,7 +1516,7 @@ void SERVERCOMMANDS_SpawnThingExact( AActor *pActor, ULONG ulPlayerExtra, Server
 	command.SetX( pActor->x );
 	command.SetY( pActor->y );
 	command.SetZ( pActor->z );
-	command.SetId( pActor->lNetID );
+	command.SetId( pActor->NetID );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
@@ -1197,6 +1525,9 @@ void SERVERCOMMANDS_SpawnThingExact( AActor *pActor, ULONG ulPlayerExtra, Server
 void SERVERCOMMANDS_SpawnThingExactNoNetID( AActor *pActor, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	if ( pActor == NULL )
+		return;
+
+	if ( pActor->NetworkFlags & NETFL_SERVERSIDEONLY )
 		return;
 
 	ServerCommands::SpawnThingExactNoNetID command;
@@ -1215,7 +1546,7 @@ void SERVERCOMMANDS_LevelSpawnThing( AActor *pActor, ULONG ulPlayerExtra, Server
 		return;
 
 	// If the actor doesn't have a network ID, it's better to send it ID-less.
-	if ( pActor->lNetID == -1 )
+	if ( pActor->NetID == 0 )
 	{
 		SERVERCOMMANDS_LevelSpawnThingNoNetID( pActor, ulPlayerExtra, flags );
 		return;
@@ -1226,7 +1557,7 @@ void SERVERCOMMANDS_LevelSpawnThing( AActor *pActor, ULONG ulPlayerExtra, Server
 	command.SetX( pActor->x );
 	command.SetY( pActor->y );
 	command.SetZ( pActor->z );
-	command.SetId( pActor->lNetID );
+	command.SetId( pActor->NetID );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
@@ -1237,7 +1568,7 @@ void SERVERCOMMANDS_LevelSpawnThingNoNetID( AActor *pActor, ULONG ulPlayerExtra,
 	if ( pActor == NULL )
 		return;
 
-	if ( pActor->ulNetworkFlags & NETFL_SERVERSIDEONLY )
+	if ( pActor->NetworkFlags & NETFL_SERVERSIDEONLY )
 		return;
 
 	ServerCommands::LevelSpawnThingNoNetID command;
@@ -1251,7 +1582,7 @@ void SERVERCOMMANDS_LevelSpawnThingNoNetID( AActor *pActor, ULONG ulPlayerExtra,
 /*
  * [TP] Compares actor position data to a previous state and calls SERVERCOMMANDS_MoveThing to send appropriate updates.
  */
-void SERVERCOMMANDS_MoveThingIfChanged( AActor *actor, const MoveThingData &oldData, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_MoveThingIfChanged( AActor *actor, const MOVE_THING_DATA_s &oldData, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	if ( EnsureActorHasNetID( actor ) )
 	{
@@ -1484,7 +1815,7 @@ void SERVERCOMMANDS_SetThingFlags( AActor *pActor, FlagSet flagset, ULONG ulPlay
 		case FLAGSET_FLAGS5:	actorFlags = pActor->flags5; break;
 		case FLAGSET_FLAGS6:	actorFlags = pActor->flags6; break;
 		case FLAGSET_FLAGS7:	actorFlags = pActor->flags7; break;
-		case FLAGSET_FLAGSST:	actorFlags = pActor->ulSTFlags; break;
+		case FLAGSET_FLAGSST:	actorFlags = pActor->STFlags; break;
 		default: return;
 	}
 
@@ -1527,7 +1858,7 @@ void SERVERCOMMANDS_UpdateThingFlagsNotAtDefaults( AActor *pActor, ULONG ulPlaye
 	{
 		SERVERCOMMANDS_SetThingFlags( pActor, FLAGSET_FLAGS7, ulPlayerExtra, flags );
 	}
-	// [BB] ulSTFlags is intentionally left out here.
+	// [BB] STFlags is intentionally left out here.
 }
 
 //*****************************************************************************
@@ -1589,11 +1920,46 @@ void SERVERCOMMANDS_SetThingProperty( AActor *pActor, ULONG ulProperty, ULONG ul
 			value = static_cast<APlayerPawn *>( pActor )->JumpZ;
 		break;
 
+	case APROP_StencilColor:
+		value = pActor->fillcolor;
+		break;
+
 	default:
 		return;
 	}
 
 	ServerCommands::SetThingProperty command;
+	command.SetActor( pActor );
+	command.SetProperty( ulProperty );
+	command.SetValue( value );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetThingStringProperty( AActor *pActor, ULONG ulProperty, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if ( !EnsureActorHasNetID (pActor) )
+		return;
+
+	const char *value;
+
+	// Set one of the actor's properties, depending on what was read in.
+	switch ( ulProperty )
+	{
+	case APROP_Species:
+		value = pActor->GetSpecies( );
+		break;
+
+	case APROP_NameTag:
+		value = pActor->GetTag( );
+		break;
+
+	default:
+		return;
+	}
+
+	ServerCommands::SetThingStringProperty command;
 	command.SetActor( pActor );
 	command.SetProperty( ulProperty );
 	command.SetValue( value );
@@ -1637,7 +2003,7 @@ void SERVERCOMMANDS_SetThingSpecial( AActor *pActor, ULONG ulPlayerExtra, Server
 		return;
 
 	NetCommand command( SVC2_SETTHINGSPECIAL );
-	command.addShort( pActor->lNetID );
+	command.addShort( pActor->NetID );
 	command.addShort( pActor->special );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
@@ -1952,13 +2318,15 @@ void SERVERCOMMANDS_SpawnPuff( AActor *pActor, ULONG ulPlayerExtra, ServerComman
 		return;
 
 	// If the actor doesn't have a network ID, it's better to send it ID-less.
-	if ( pActor->lNetID == -1 )
+	if ( pActor->NetID == 0 )
 	{
 		ULONG ulState = STATE_SPAWN;
 		if ( pActor->state == pActor->MeleeState )
 			ulState = STATE_MELEE;
 		else if ( pActor->state == pActor->FindState( NAME_Crash ) )
 			ulState = STATE_CRASH;
+		else if ( pActor->state == pActor->FindState( NAME_Death, NAME_Extreme, true ) )
+			ulState = STATE_XDEATH;
 		bool bSendTranslation = pActor->Translation != 0;
 		SERVERCOMMANDS_SpawnPuffNoNetID( pActor, ulState, bSendTranslation, ulPlayerExtra, flags );
 		return;
@@ -1969,7 +2337,7 @@ void SERVERCOMMANDS_SpawnPuff( AActor *pActor, ULONG ulPlayerExtra, ServerComman
 	command.SetY( pActor->y );
 	command.SetZ( pActor->z );
 	command.SetPufftype( pActor->GetClass( ) );
-	command.SetId( pActor->lNetID );
+	command.SetId( pActor->NetID );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
@@ -1978,6 +2346,10 @@ void SERVERCOMMANDS_SpawnPuff( AActor *pActor, ULONG ulPlayerExtra, ServerComman
 void SERVERCOMMANDS_SpawnPuffNoNetID( AActor *pActor, ULONG ulState, bool bSendTranslation, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	if ( pActor == NULL )
+		return;
+
+	// [AK] If the puff is serversided only, don't tell the clients to spawn it.
+	if ( pActor->NetworkFlags & NETFL_SERVERSIDEONLY )
 		return;
 
 	ServerCommands::SpawnPuffNoNetID command;
@@ -2023,79 +2395,122 @@ void SERVERCOMMANDS_PrintMOTD( const char *pszString, ULONG ulPlayerExtra, Serve
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_PrintHUDMessage( const char *pszString, float fX, float fY, LONG lHUDWidth, LONG lHUDHeight, LONG lColor, float fHoldTime, const char *pszFont, bool bLog, LONG lID, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_PrintHUDMessage( const char *pszString, float fX, float fY, LONG lHUDWidth, LONG lHUDHeight, LONG lType, LONG lColor, float fHoldTime, float fInTime, float fOutTime, const char *pszFont, LONG lID, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	ServerCommands::PrintHUDMessage command;
 	command.SetMessage( pszString );
 	command.SetX( fX );
 	command.SetY( fY );
-	command.SetHudWidth( lHUDWidth );
-	command.SetHudHeight( lHUDHeight );
 	command.SetColor( lColor );
 	command.SetHoldTime( fHoldTime );
-	command.SetFontName( pszFont );
-	command.SetLog( bLog );
 	command.SetId( lID );
+
+	// [AK] We'll send the in and out times if they're needed.
+	command.SetInTime( fInTime );
+	command.SetOutTime( fOutTime );
+
+	// [AK] Send the HUD size if it's non-zero.
+	if (( lHUDWidth != 0 ) || ( lHUDHeight != 0 ))
+		lType |= HUDMESSAGE_SEND_HUDSIZE;
+	command.SetHudWidth( lHUDWidth );
+	command.SetHudHeight( lHUDHeight );
+
+	// [AK] Send the name of the font if it isn't SMALLFONT.
+	if ( stricmp( pszFont, "SmallFont" ) != 0 )
+		lType |= HUDMESSAGE_SEND_FONT;
+	command.SetFontName( pszFont );
+
+	// [AK] Initialize all unused members.
+	command.SetClipRectLeft( 0 );
+	command.SetClipRectTop( 0 );
+	command.SetClipRectWidth( 0 );
+	command.SetClipRectHeight( 0 );
+	command.SetWrapWidth( 0 );
+	command.SetAlpha( 0 );
+
+	command.SetType( lType );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_PrintHUDMessageFadeOut( const char *pszString, float fX, float fY, LONG lHUDWidth, LONG lHUDHeight, LONG lColor, float fHoldTime, float fFadeOutTime, const char *pszFont, bool bLog, LONG lID, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_PrintACSHUDMessage( DLevelScript *pScript, const char *pszString, float fX, float fY, LONG lType, LONG lColor, float fHoldTime, float fInTime, float fOutTime, fixed_t Alpha, LONG lID, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
-	ServerCommands::PrintHUDMessageFadeOut command;
+	ServerCommands::PrintHUDMessage command;
 	command.SetMessage( pszString );
 	command.SetX( fX );
 	command.SetY( fY );
-	command.SetHudWidth( lHUDWidth );
-	command.SetHudHeight( lHUDHeight );
 	command.SetColor( lColor );
 	command.SetHoldTime( fHoldTime );
-	command.SetFadeOutTime( fFadeOutTime );
-	command.SetFontName( pszFont );
-	command.SetLog( bLog );
 	command.SetId( lID );
+
+	// [AK] Send the HUD message type and also indicate that it's from ACS.
+	LONG lNewType = (( lType & HUDMESSAGETYPE_MASK ) | HUDMESSAGE_ACS );
+
+	// [AK] We'll send the in and out times if they're needed.
+	command.SetInTime( fInTime );
+	command.SetOutTime( fOutTime );
+
+	// [AK] Send the HUD size if it's non-zero.
+	if (( pScript->hudwidth != 0 ) || ( pScript->hudheight != 0 ))
+		lNewType |= HUDMESSAGE_SEND_HUDSIZE;
+	command.SetHudWidth( pScript->hudwidth );
+	command.SetHudHeight( pScript->hudheight );
+
+	// [AK] Send the clipping rectangle and wrap width if necessary.
+	if (( pScript->ClipRectWidth != 0 ) || ( pScript->ClipRectHeight != 0 ))
+		lNewType |= HUDMESSAGE_SEND_CLIPRECT;
+	command.SetClipRectLeft( pScript->ClipRectLeft );
+	command.SetClipRectTop( pScript->ClipRectTop );
+	command.SetClipRectWidth( pScript->ClipRectWidth );
+	command.SetClipRectHeight( pScript->ClipRectHeight );
+
+	// [AK] Send the wrap width if it's non-zero.
+	if ( pScript->WrapWidth != 0 )
+		lNewType |= HUDMESSAGE_SEND_WRAPWIDTH;
+	command.SetWrapWidth( pScript->WrapWidth );
+
+	// [AK] Send the name of the font if it isn't SMALLFONT.
+	if ( pScript->activefont != SmallFont )
+		lNewType |= HUDMESSAGE_SEND_FONT;
+	command.SetFontName( pScript->activefontname.GetChars( ));
+
+	// [AK] Send the alpha only if we need to.
+	if (( lType & HUDMSG_ALPHA ) && ( Alpha < 65536 ))
+		lNewType |= HUDMESSAGE_NET_ALPHA;
+	command.SetAlpha( Alpha );
+
+	// [AK] Shift the bits of the layer and visibility flags so they match the
+	// HUDMESSAGE_NET_LAYERMASK and HUDMESSAGE_NET_VISIBLEMASK bit masks.
+	lNewType |= (( lType & HUDMSG_LAYER_MASK ) >> 1 );
+	lNewType |= (( lType & HUDMSG_VISIBILITY_MASK ) >> 3 );
+
+	// [AK] Convert any remaining ACS HUD message flags that may be used, so
+	// all of the flags can fit into a single short which we'll send.
+	if ( lType & HUDMSG_LOG )
+		lNewType |= HUDMESSAGE_NET_LOG;
+	if ( lType & HUDMSG_ADDBLEND )
+		lNewType |= HUDMESSAGE_NET_ADDBLEND;
+	if ( lType & HUDMSG_NOWRAP )
+		lNewType |= HUDMESSAGE_NET_NOWRAP;
+
+	command.SetType( lNewType );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_PrintHUDMessageFadeInOut( const char *pszString, float fX, float fY, LONG lHUDWidth, LONG lHUDHeight, LONG lColor, float fHoldTime, float fFadeInTime, float fFadeOutTime, const char *pszFont, bool bLog, LONG lID, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_PrintTeamScoresMessage( unsigned int team, unsigned int scorer, unsigned int assister, unsigned int numPoints, unsigned int playerExtra, ServerCommandFlags flags )
 {
-	ServerCommands::PrintHUDMessageFadeInOut command;
-	command.SetMessage( pszString );
-	command.SetX( fX );
-	command.SetY( fY );
-	command.SetHudWidth( lHUDWidth );
-	command.SetHudHeight( lHUDHeight );
-	command.SetColor( lColor );
-	command.SetHoldTime( fHoldTime );
-	command.SetFadeInTime( fFadeInTime );
-	command.SetFadeOutTime( fFadeOutTime );
-	command.SetFontName( pszFont );
-	command.SetLog( bLog );
-	command.SetId( lID );
-	command.sendCommandToClients( ulPlayerExtra, flags );
-}
+	if (( TEAM_CheckIfValid( team ) == false ) || ( PLAYER_IsValidPlayer( scorer ) == false ) || ( numPoints == 0 ))
+		return;
 
-//*****************************************************************************
-//
-void SERVERCOMMANDS_PrintHUDMessageTypeOnFadeOut( const char *pszString, float fX, float fY, LONG lHUDWidth, LONG lHUDHeight, LONG lColor, float fTypeTime, float fHoldTime, float fFadeOutTime, const char *pszFont, bool bLog, LONG lID, ULONG ulPlayerExtra, ServerCommandFlags flags )
-{
-	ServerCommands::PrintHUDMessageTypeOnFadeOut command;
-	command.SetMessage( pszString );
-	command.SetX( fX );
-	command.SetY( fY );
-	command.SetHudWidth( lHUDWidth );
-	command.SetHudHeight( lHUDHeight );
-	command.SetColor( lColor );
-	command.SetTypeOnTime( fTypeTime );
-	command.SetHoldTime( fHoldTime );
-	command.SetFadeOutTime( fFadeOutTime );
-	command.SetFontName( pszFont );
-	command.SetLog( bLog );
-	command.SetId( lID );
-	command.sendCommandToClients( ulPlayerExtra, flags );
+	ServerCommands::PrintTeamScoresMessage command;
+	command.SetTeam( team );
+	command.SetScorer( scorer );
+	command.SetAssister( assister );
+	command.SetNumPoints( numPoints );
+	command.sendCommandToClients( playerExtra, flags );
 }
 
 //*****************************************************************************
@@ -2131,6 +2546,7 @@ void SERVERCOMMANDS_SetGameDMFlags( ULONG ulPlayerExtra, ServerCommandFlags flag
 	command.addLong ( compatflags2 );
 	command.addLong ( zacompatflags );
 	command.addLong ( zadmflags );
+	command.addLong ( sv_forbidvoteflags );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
@@ -2158,11 +2574,29 @@ void SERVERCOMMANDS_SetGameModeLimits( ULONG ulPlayerExtra, ServerCommandFlags f
 	// [WS] Send in sv_coop_damagefactor.
 	command.addFloat( sv_coop_damagefactor );
 	// [WS] Send in alwaysapplydmflags.
-	command.addByte( alwaysapplydmflags );
+	command.addBit( alwaysapplydmflags );
+	// [AK] Send sv_unlimited_pickup.
+	command.addBit( sv_unlimited_pickup );
+	// [TP] Send sv_limitcommands
+	command.addBit( sv_limitcommands );
+	// [AK] Send sv_respawninsurvivalinvasion.
+	command.addBit( sv_respawninsurvivalinvasion );
 	// [AM] Send lobby map.
 	command.addString( lobby );
-	// [TP] Send sv_limitcommands
-	command.addByte( sv_limitcommands );
+	// [AK] Send sv_allowprivatechat.
+	command.addByte( sv_allowprivatechat );
+	// [AK] Send sv_allowvoicechat.
+	command.addByte( sv_allowvoicechat );
+	// [AK] Send sv_proximityvoicechat.
+	command.addByte( sv_proximityvoicechat );
+	// [AK] Send the min proximity voice chat rolloff distance.
+	command.addFloat( sv_minproximityrolloffdist );
+	// [AK] Send the max proximity voice chat rolloff distance.
+	command.addFloat( sv_maxproximityrolloffdist );
+	// [AK] Send sv_respawndelaytime.
+	command.addFloat( sv_respawndelaytime );
+	// [TRSR] Send sv_nocallvote.
+	command.addByte( sv_nocallvote );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
@@ -2290,17 +2724,29 @@ void SERVERCOMMANDS_DoGameModeWinSequence( ULONG ulWinner, ULONG ulPlayerExtra, 
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_SetDominationState( ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_SetDominationPointOwner( ULONG ulPoint, unsigned int team, bool broadcast, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
-	unsigned int NumPoints = DOMINATION_NumPoints();
-	unsigned int *PointOwners = DOMINATION_PointOwners();
-	NetCommand command( SVC_SETDOMINATIONSTATE );
-	command.addLong( NumPoints );
+	ServerCommands::SetDominationPointOwner command;
+	command.SetPoint( ulPoint );
+	command.SetTeam( team );
+	command.SetBroadcast( broadcast );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
 
-	for( unsigned int i = 0u; i < NumPoints; i++ )
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetDominationPointState( ULONG ulPoint, DPOINT_s state, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	ServerCommands::SetDominationPointState command;
+	command.SetPoint( ulPoint );
+	command.SetDisabled( state.disabled );
+
+	// [TRSR] This serves to initialize the contesters even with an empty list.
+	command.PushToContesters( 0 );
+	command.ClearContesters();
+	for ( std::set<int>::iterator it = state.contesting.begin(); it != state.contesting.end(); ++it )
 	{
-		//one byte should be enough to hold the value of the team.
-		command.addByte( PointOwners[i] );
+		command.PushToContesters( *it );
 	}
 
 	command.sendCommandToClients( ulPlayerExtra, flags );
@@ -2308,53 +2754,33 @@ void SERVERCOMMANDS_SetDominationState( ULONG ulPlayerExtra, ServerCommandFlags 
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_SetDominationPointOwnership( ULONG ulPoint, ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
-{
-	NetCommand command( SVC_SETDOMINATIONPOINTOWNER );
-	command.addByte( ulPoint );
-	command.addByte( ulPlayer );
-	command.sendCommandToClients( ulPlayerExtra, flags );
-}
-
-//*****************************************************************************
-//
-void SERVERCOMMANDS_SetTeamFrags( ULONG ulTeam, LONG lFrags, bool bAnnounce, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_SetTeamScore( ULONG ulTeam, ULONG ulType, bool bAnnounce, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	if ( TEAM_CheckIfValid( ulTeam ) == false )
 		return;
 
-	NetCommand command( SVC_SETTEAMFRAGS );
-	command.addByte( ulTeam );
-	command.addShort( lFrags );
-	command.addByte( bAnnounce );
-	command.sendCommandToClients( ulPlayerExtra, flags );
-}
+	LONG lScore = 0;
 
-//*****************************************************************************
-//
-void SERVERCOMMANDS_SetTeamScore( ULONG ulTeam, LONG lScore, bool bAnnounce, ULONG ulPlayerExtra, ServerCommandFlags flags )
-{
-	if ( TEAM_CheckIfValid( ulTeam ) == false )
-		return;
+	switch ( ulType )
+	{
+		case TEAMSCORE_FRAGS:
+			lScore = TEAM_GetFragCount( ulTeam );
+			break;
+
+		case TEAMSCORE_POINTS:
+			lScore = TEAM_GetPointCount( ulTeam );
+			break;
+		
+		case TEAMSCORE_WINS:
+			lScore = TEAM_GetWinCount( ulTeam );
+			break;
+	}
 
 	NetCommand command( SVC_SETTEAMSCORE );
 	command.addByte( ulTeam );
-	command.addShort( lScore );
-	command.addByte( bAnnounce );
-	command.sendCommandToClients( ulPlayerExtra, flags );
-}
-
-//*****************************************************************************
-//
-void SERVERCOMMANDS_SetTeamWins( ULONG ulTeam, LONG lWins, bool bAnnounce, ULONG ulPlayerExtra, ServerCommandFlags flags )
-{
-	if ( TEAM_CheckIfValid( ulTeam ) == false )
-		return;
-
-	NetCommand command( SVC_SETTEAMWINS );
-	command.addByte( ulTeam );
-	command.addShort( lWins );
-	command.addByte( bAnnounce );
+	command.addBit( bAnnounce );
+	command.addShortByte( ulType, 5 );
+	command.addVariable( lScore );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
@@ -2374,28 +2800,32 @@ void SERVERCOMMANDS_SetTeamReturnTicks( ULONG ulTeam, ULONG ulReturnTicks, ULONG
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_TeamFlagReturned( ULONG ulTeam, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_TeamItemReturned( unsigned int player, unsigned int team, unsigned int playerExtra, ServerCommandFlags flags )
 {
-	// [BB] Allow teams.Size( ) here, this handles the white flag.
-	if (( TEAM_CheckIfValid ( ulTeam ) == false ) && ( ulTeam != teams.Size() ))
+	if (( player != MAXPLAYERS ) && ( PLAYER_IsValidPlayer( player ) == false ))
 		return;
 
-	NetCommand command( SVC_TEAMFLAGRETURNED );
-	command.addByte( ulTeam );
-	command.sendCommandToClients( ulPlayerExtra, flags );
+	// [BB] Allow teams.Size( ) here, this handles the white flag.
+	if (( TEAM_CheckIfValid ( team ) == false ) && ( team != teams.Size() ))
+		return;
+
+	NetCommand command( SVC_TEAMITEMRETURNED );
+	command.addByte( player );
+	command.addByte( team );
+	command.sendCommandToClients( playerExtra, flags );
 }
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_TeamFlagDropped( ULONG ulPlayer, ULONG ulTeam, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_TeamItemDropped( unsigned int player, unsigned int team, unsigned int playerExtra, ServerCommandFlags flags )
 {
-	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
+	if ( PLAYER_IsValidPlayer( player ) == false )
 		return;
 
-	NetCommand command( SVC_TEAMFLAGDROPPED );
-	command.addByte( ulPlayer );
-	command.addByte( ulTeam );
-	command.sendCommandToClients( ulPlayerExtra, flags );
+	NetCommand command( SVC_TEAMITEMDROPPED );
+	command.addByte( player );
+	command.addByte( team );
+	command.sendCommandToClients( playerExtra, flags );
 }
 
 //*****************************************************************************
@@ -2403,6 +2833,10 @@ void SERVERCOMMANDS_TeamFlagDropped( ULONG ulPlayer, ULONG ulTeam, ULONG ulPlaye
 void SERVERCOMMANDS_SpawnMissile( AActor *pMissile, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	if ( pMissile == NULL )
+		return;
+
+	// [AK] If the missile is serversided only, don't tell the clients to spawn it.
+	if ( pMissile->NetworkFlags & NETFL_SERVERSIDEONLY )
 		return;
 
 	ServerCommands::SpawnMissile command;
@@ -2413,12 +2847,12 @@ void SERVERCOMMANDS_SpawnMissile( AActor *pMissile, ULONG ulPlayerExtra, ServerC
 	command.SetVelY( pMissile->vely );
 	command.SetVelZ( pMissile->velz );
 	command.SetMissileType( pMissile->GetClass() );
-	command.SetNetID( pMissile->lNetID );
+	command.SetNetID( pMissile->NetID );
 
 	if ( pMissile->target )
-		command.SetTargetNetID( pMissile->target->lNetID );
+		command.SetTargetNetID( pMissile->target->NetID );
 	else
-		command.SetTargetNetID( -1 );
+		command.SetTargetNetID( 0 );
 
 	command.sendCommandToClients( ulPlayerExtra, flags );
 
@@ -2435,6 +2869,10 @@ void SERVERCOMMANDS_SpawnMissileExact( AActor *pMissile, ULONG ulPlayerExtra, Se
 	if ( pMissile == NULL )
 		return;
 
+	// [AK] If the missile is serversided only, don't tell the clients to spawn it.
+	if ( pMissile->NetworkFlags & NETFL_SERVERSIDEONLY )
+		return;
+
 	ServerCommands::SpawnMissileExact command;
 	command.SetX( pMissile->x );
 	command.SetY( pMissile->y );
@@ -2443,12 +2881,12 @@ void SERVERCOMMANDS_SpawnMissileExact( AActor *pMissile, ULONG ulPlayerExtra, Se
 	command.SetVelY( pMissile->vely );
 	command.SetVelZ( pMissile->velz );
 	command.SetMissileType( pMissile->GetClass() );
-	command.SetNetID( pMissile->lNetID );
+	command.SetNetID( pMissile->NetID );
 
 	if ( pMissile->target )
-		command.SetTargetNetID( pMissile->target->lNetID );
+		command.SetTargetNetID( pMissile->target->NetID );
 	else
-		command.SetTargetNetID( -1 );
+		command.SetTargetNetID( 0 );
 
 	command.sendCommandToClients( ulPlayerExtra, flags );
 
@@ -2537,6 +2975,20 @@ void SERVERCOMMANDS_WeaponRailgun( AActor *source, const FVector3 &start, const 
 		|| fabs( drift - 1.0f ) > 1e-8 );
 
 	command.sendCommandToClients ( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetWeaponZoomFactor( const unsigned int player, const float zoom, const int zoomFlags, const unsigned int playerExtra, ServerCommandFlags flags )
+{
+	if (( PLAYER_IsValidPlayer( player ) == false ) || ( players[player].ReadyWeapon == nullptr ))
+		return;
+
+	ServerCommands::SetWeaponZoomFactor command;
+	command.SetPlayer( &players[player] );
+	command.SetZoom( zoom );
+	command.SetFlags( zoomFlags );
+	command.sendCommandToClients( playerExtra, flags );
 }
 
 //*****************************************************************************
@@ -2950,13 +3402,13 @@ void SERVERCOMMANDS_SetLineTexture( ULONG ulLine, ULONG ulPlayerExtra, ServerCom
 		return;
 
 	// No changed textures to update.
-	if ( lines[ulLine].ulTexChangeFlags == 0 )
+	if ( lines[ulLine].TexChangeFlags == 0 )
 		return;
 
 	ServerCommands::SetLineTexture command;
 	command.SetLine( &lines[ulLine] );
 
-	if ( lines[ulLine].ulTexChangeFlags & TEXCHANGE_FRONTTOP )
+	if ( lines[ulLine].TexChangeFlags & TEXCHANGE_FRONTTOP )
 	{
 		command.SetTextureName( lines[ulLine].sidedef[0]->GetTexture(side_t::top).isValid() ? TexMan[lines[ulLine].sidedef[0]->GetTexture(side_t::top)]->Name : "-" );
 		command.SetSide( 0 );
@@ -2964,7 +3416,7 @@ void SERVERCOMMANDS_SetLineTexture( ULONG ulLine, ULONG ulPlayerExtra, ServerCom
 		command.sendCommandToClients( ulPlayerExtra, flags );
 	}
 
-	if ( lines[ulLine].ulTexChangeFlags & TEXCHANGE_FRONTMEDIUM )
+	if ( lines[ulLine].TexChangeFlags & TEXCHANGE_FRONTMEDIUM )
 	{
 		command.SetTextureName( lines[ulLine].sidedef[0]->GetTexture(side_t::mid).isValid() ? TexMan[lines[ulLine].sidedef[0]->GetTexture(side_t::mid)]->Name : "-" );
 		command.SetSide( 0 );
@@ -2972,7 +3424,7 @@ void SERVERCOMMANDS_SetLineTexture( ULONG ulLine, ULONG ulPlayerExtra, ServerCom
 		command.sendCommandToClients( ulPlayerExtra, flags );
 	}
 
-	if ( lines[ulLine].ulTexChangeFlags & TEXCHANGE_FRONTBOTTOM )
+	if ( lines[ulLine].TexChangeFlags & TEXCHANGE_FRONTBOTTOM )
 	{
 		command.SetTextureName( lines[ulLine].sidedef[0]->GetTexture(side_t::bottom).isValid() ? TexMan[lines[ulLine].sidedef[0]->GetTexture(side_t::bottom)]->Name : "-" );
 		command.SetSide( 0 );
@@ -2982,7 +3434,7 @@ void SERVERCOMMANDS_SetLineTexture( ULONG ulLine, ULONG ulPlayerExtra, ServerCom
 
 	if ( lines[ulLine].sidedef[1] != NULL )
 	{
-		if ( lines[ulLine].ulTexChangeFlags & TEXCHANGE_BACKTOP )
+		if ( lines[ulLine].TexChangeFlags & TEXCHANGE_BACKTOP )
 		{
 			command.SetTextureName( lines[ulLine].sidedef[1]->GetTexture(side_t::top).isValid() ? TexMan[lines[ulLine].sidedef[1]->GetTexture(side_t::top)]->Name : "-" );
 			command.SetSide( 1 );
@@ -2990,7 +3442,7 @@ void SERVERCOMMANDS_SetLineTexture( ULONG ulLine, ULONG ulPlayerExtra, ServerCom
 			command.sendCommandToClients( ulPlayerExtra, flags );
 		}
 
-		if ( lines[ulLine].ulTexChangeFlags & TEXCHANGE_BACKMEDIUM )
+		if ( lines[ulLine].TexChangeFlags & TEXCHANGE_BACKMEDIUM )
 		{
 			command.SetTextureName( lines[ulLine].sidedef[1]->GetTexture(side_t::mid).isValid() ? TexMan[lines[ulLine].sidedef[1]->GetTexture(side_t::mid)]->Name : "-" );
 			command.SetSide( 1 );
@@ -2998,7 +3450,7 @@ void SERVERCOMMANDS_SetLineTexture( ULONG ulLine, ULONG ulPlayerExtra, ServerCom
 			command.sendCommandToClients( ulPlayerExtra, flags );
 		}
 
-		if ( lines[ulLine].ulTexChangeFlags & TEXCHANGE_BACKBOTTOM )
+		if ( lines[ulLine].TexChangeFlags & TEXCHANGE_BACKBOTTOM )
 		{
 			command.SetTextureName( lines[ulLine].sidedef[1]->GetTexture(side_t::bottom).isValid() ? TexMan[lines[ulLine].sidedef[1]->GetTexture(side_t::bottom)]->Name : "-" );
 			command.SetSide( 1 );
@@ -3021,6 +3473,76 @@ void SERVERCOMMANDS_SetLineTextureByID( ULONG ulLineID, ULONG ulSide, ULONG ulPo
 	command.SetSide( !!ulSide );
 	command.SetPosition( ulPosition );
 	command.sendCommandToClients ( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetLineTextureOffset( ULONG ulLine, ULONG ulSide, ULONG ulPosition, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if (( ulLine >= (ULONG)numlines ) || ( lines[ulLine].sidedef[ulSide] == NULL ))
+		return;
+
+	if ( ulSide > 1 )
+		SERVER_PrintWarning( "SERVERCOMMANDS_SetLineTextureOffset: invalid side: %lu!\n", ulSide );
+
+	ServerCommands::SetLineTextureOffset command;
+	command.SetLine( &lines[ulLine] );
+	command.SetXOffset( lines[ulLine].sidedef[!!ulSide]->textures[ulPosition].xoffset );
+	command.SetYOffset( lines[ulLine].sidedef[!!ulSide]->textures[ulPosition].yoffset );
+	command.SetSide( !!ulSide );
+	command.SetPosition( ulPosition );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetLineTextureOffsetByID( ULONG ulLineID, fixed_t XOffset, fixed_t YOffset, ULONG ulSide, ULONG ulFlags, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if ( ulSide > 1 )
+		SERVER_PrintWarning( "SERVERCOMMANDS_SetLineTextureOffsetByID: invalid side: %lu!\n", ulSide );
+
+	ServerCommands::SetLineTextureOffsetByID command;
+	command.SetLineID( ulLineID );
+	command.SetXOffset( XOffset );
+	command.SetYOffset( YOffset );
+	command.SetSide( !!ulSide );
+	command.SetFlags( ulFlags );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetLineTextureScale( ULONG ulLine, ULONG ulSide, ULONG ulPosition, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if (( ulLine >= (ULONG)numlines ) || ( lines[ulLine].sidedef[ulSide] == NULL ))
+		return;
+
+	if ( ulSide > 1 )
+		SERVER_PrintWarning( "SERVERCOMMANDS_SetLineTextureScale: invalid side: %lu!\n", ulSide );
+
+	ServerCommands::SetLineTextureScale command;
+	command.SetLine( &lines[ulLine] );
+	command.SetXScale( lines[ulLine].sidedef[!!ulSide]->textures[ulPosition].xscale );
+	command.SetYScale( lines[ulLine].sidedef[!!ulSide]->textures[ulPosition].yscale );
+	command.SetSide( !!ulSide );
+	command.SetPosition( ulPosition );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_SetLineTextureScaleByID( ULONG ulLineID, fixed_t XScale, fixed_t YScale, ULONG ulSide, ULONG ulFlags, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if ( ulSide > 1 )
+		SERVER_PrintWarning( "SERVERCOMMANDS_SetLineTextureScaleByID: invalid side: %lu!\n", ulSide );
+
+	ServerCommands::SetLineTextureScaleByID command;
+	command.SetLineID( ulLineID );
+	command.SetXScale( XScale );
+	command.SetYScale( YScale );
+	command.SetSide( !!ulSide );
+	command.SetFlags( ulFlags );
+	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
 //*****************************************************************************
@@ -3080,6 +3602,30 @@ void SERVERCOMMANDS_ACSScriptExecute( int ScriptNum, AActor *pActivator, LONG lL
 }
 
 //*****************************************************************************
+//
+void SERVERCOMMANDS_ACSSendString( int ScriptNum, AActor *pActivator, const char *pszString, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	int netid = NETWORK_ACSScriptToNetID( ScriptNum );
+
+	if ( netid == NO_SCRIPT_NETID )
+	{
+		// [AK] This shouldn't happen.
+		if ( sv_showwarnings )
+		{
+			Printf( "SERVERCOMMANDS_ACSSendString: Failed to find a netid for script %s!\n",
+				FName( ENamedName( -ScriptNum )).GetChars() );
+		}
+		return;
+	}
+
+	ServerCommands::ACSSendString command;
+	command.SetNetid( netid );
+	command.SetActivator( pActivator );
+	command.SetString( pszString );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
 //*****************************************************************************
 //
 void SERVERCOMMANDS_SetSideFlags( ULONG ulSide, ULONG ulPlayerExtra, ServerCommandFlags flags )
@@ -3113,8 +3659,20 @@ void SERVERCOMMANDS_SoundActor( AActor *pActor, LONG lChannel, const char *pszSo
 	if ( pActor == NULL )
 		return;
 
+	// [AK] There's a few sounds that we shouldn't play if it originated from a player who we're backtracing.
+	if (( pActor->player ) && ( SERVER_IsBacktracingPlayer( pActor->player - players )))
+	{
+		static const char *pszRestrictedSounds[7] = { "*grunt", "*land", "*falling", "*jump", "*dive", "*surface", "*gasp" };
+
+		for ( unsigned int i = 0; i < 7; i++ )
+		{
+			if ( stricmp( pszSound, pszRestrictedSounds[i] ) == 0 )
+				return;
+		}
+	}
+
 	// [BB] If the actor doesn't have a NetID, we have to instruct the clients differently how to play the sound.
-	if ( pActor->lNetID == -1 )
+	if ( pActor->NetID == 0 )
 	{
 		SERVERCOMMANDS_SoundPoint( pActor->x, pActor->y, pActor->z, lChannel, pszSound, fVolume, fAttenuation, ulPlayerExtra, flags );
 		return;
@@ -3169,6 +3727,29 @@ void SERVERCOMMANDS_AnnouncerSound( const char *pszSound, ULONG ulPlayerExtra, S
 	ServerCommands::AnnouncerSound command;
 	command.SetSound( pszSound );
 	command.sendCommandToClients ( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_StopSound( AActor *pActor, LONG lChannel, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	// [AK] The actor must have a NetID so we can tell clients to stop the sound on their channel.
+	if ( EnsureActorHasNetID( pActor ) == false )
+		return;
+
+	ServerCommands::StopSound command;
+	command.SetActor( pActor );
+	command.SetChannel( lChannel & 0xFF );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+// [SB]
+void SERVERCOMMANDS_StopOriginlessSound( LONG lChannel, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	ServerCommands::StopOriginlessSound command;
+	command.SetChannel( lChannel & 0xFF );
+	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 
 //*****************************************************************************
@@ -3238,12 +3819,21 @@ void SERVERCOMMANDS_VoteEnded( bool bVotePassed, ULONG ulPlayerExtra, ServerComm
 }
 
 //*****************************************************************************
+//
+void SERVERCOMMANDS_ClearVote( ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	NetCommand command( SVC2_CLEARVOTE );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
 //*****************************************************************************
 //
 void SERVERCOMMANDS_MapLoad( ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	ServerCommands::MapLoad command;
 	command.SetMapName( level.mapname );
+	command.SetCurrentPosition( MAPROTATION_GetCurrentPosition() );
 	command.sendCommandToClients ( ulPlayerExtra, flags );
 }
 
@@ -3258,15 +3848,16 @@ void SERVERCOMMANDS_MapNew( const char *pszMapName, ULONG ulPlayerExtra, ServerC
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_MapExit( LONG lPosition, const char *pszNextMap, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_MapExit( const int position, const char *nextMap, const int changeFlags, unsigned int playerExtra, ServerCommandFlags flags )
 {
-	if ( pszNextMap == NULL )
+	if ( nextMap == nullptr )
 		return;
 
 	ServerCommands::MapExit command;
-	command.SetPosition( lPosition );
-	command.SetNextMap( pszNextMap );
-	command.sendCommandToClients ( ulPlayerExtra, flags );
+	command.SetPosition( position );
+	command.SetNextMap( nextMap );
+	command.SetChangeFlags( changeFlags );
+	command.sendCommandToClients( playerExtra, flags );
 
 	// [BB] The clients who are authenticated, but still didn't finish loading
 	// the map are not covered by the code above and need special treatment.
@@ -3401,7 +3992,7 @@ void SERVERCOMMANDS_SetMapSkyScrollSpeed( bool isSky1, ULONG ulPlayerExtra, Serv
 //*****************************************************************************
 //*****************************************************************************
 //
-void SERVERCOMMANDS_GiveInventory( ULONG ulPlayer, AInventory *pInventory, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_GiveInventory( ULONG ulPlayer, AInventory *pInventory, ULONG ulPlayerExtra, ServerCommandFlags flags, bool bExtraValue )
 {
 	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
 		return;
@@ -3409,14 +4000,20 @@ void SERVERCOMMANDS_GiveInventory( ULONG ulPlayer, AInventory *pInventory, ULONG
 	if ( pInventory == NULL )
 		return;
 
-	if ( pInventory->ulNetworkFlags & NETFL_SERVERSIDEONLY )
+	if ( pInventory->NetworkFlags & NETFL_SERVERSIDEONLY )
 		return;
 
-	NetCommand command ( SVC_GIVEINVENTORY );
-	command.addByte ( ulPlayer );
-	command.addShort (  pInventory->GetClass()->getActorNetworkIndex() );
-	command.addLong ( pInventory->Amount );
-	command.sendCommandToClients ( ulPlayerExtra, flags );
+	// [RK] Determine which command we're going to prepare based on bExtraValue.
+	std::unique_ptr<NetCommand> pCommand ( bExtraValue ? new NetCommand ( SVC2_GIVEINVENTORYEXTRA ) : new NetCommand ( SVC_GIVEINVENTORY ));
+
+	pCommand->addByte ( ulPlayer );
+	pCommand->addShort (  pInventory->GetClass()->getActorNetworkIndex() );
+	pCommand->addLong ( pInventory->Amount );
+
+	if ( bExtraValue )
+		pCommand->addLong(pInventory->MaxAmount);
+
+	pCommand->sendCommandToClients ( ulPlayerExtra, flags );
 
 	// [BB] Clients don't know that a BackpackItem may be depleted. In this case we have to resync the ammo count.
 	if ( pInventory->IsKindOf (RUNTIME_CLASS(ABackpackItem)) && static_cast<ABackpackItem*> ( pInventory )->bDepleted )
@@ -3451,7 +4048,7 @@ void SERVERCOMMANDS_TakeInventory( ULONG ulPlayer, const PClass *inventoryClass,
 	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
 		return;
 
-	if ( inventoryClass == NULL || ( GetDefaultByType ( inventoryClass )->ulNetworkFlags & NETFL_SERVERSIDEONLY ) )
+	if ( inventoryClass == NULL || ( GetDefaultByType ( inventoryClass )->NetworkFlags & NETFL_SERVERSIDEONLY ) )
 		return;
 
 	NetCommand command ( SVC_TAKEINVENTORY );
@@ -3511,7 +4108,7 @@ void SERVERCOMMANDS_GiveWeaponHolder( ULONG ulPlayer, AWeaponHolder *pHolder, UL
 	if ( pHolder == NULL )
 		return;
 
-	if ( pHolder->ulNetworkFlags & NETFL_SERVERSIDEONLY )
+	if ( pHolder->NetworkFlags & NETFL_SERVERSIDEONLY )
 		return;
 
 	ServerCommands::GiveWeaponHolder command;
@@ -3598,7 +4195,7 @@ void SERVERCOMMANDS_SetFastChaseStrafeCount( AActor *mobj, ULONG ulPlayerExtra, 
 		return;
 
 	NetCommand command( SVC2_SETFASTCHASESTRAFECOUNT );
-	command.addShort( mobj->lNetID );
+	command.addShort( mobj->NetID );
 	command.addByte( mobj->FastChaseStrafeCount );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
@@ -3616,7 +4213,7 @@ void SERVERCOMMANDS_SetThingHealth( AActor* mobj, ULONG ulPlayerExtra, ServerCom
 		return;
 
 	NetCommand command( SVC2_SETTHINGHEALTH );
-	command.addShort( mobj->lNetID );
+	command.addShort( mobj->NetID );
 	command.addByte( mobj->health );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
@@ -3632,7 +4229,7 @@ void SERVERCOMMANDS_SetThingScale( AActor* mobj, unsigned int scaleFlags, ULONG 
 		return;
 
 	NetCommand command( SVC2_SETTHINGSCALE );
-	command.addShort( mobj->lNetID );
+	command.addShort( mobj->NetID );
 	command.addByte( scaleFlags );
 	if ( scaleFlags & ACTORSCALE_X )
 		command.addLong( mobj->scaleX );
@@ -3661,13 +4258,26 @@ void SERVERCOMMANDS_UpdateThingScaleNotAtDefault( AActor* pActor, ULONG ulPlayer
 
 //*****************************************************************************
 //
-void SERVERCOMMANDS_FlashStealthMonster( AActor* pActor, ULONG ulPlayerExtra, ServerCommandFlags flags )
+void SERVERCOMMANDS_FlashStealthMonster( AActor* pActor, SBYTE direction, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	if ( EnsureActorHasNetID( pActor ) == false )
 		return;
 
 	NetCommand command ( SVC2_FLASHSTEALTHMONSTER );
-	command.addShort( pActor->lNetID );
+	command.addShort( pActor->NetID );
+	command.addByte( direction );
+	command.sendCommandToClients();
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_StopAllSoundsOnThing( AActor *pActor, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if ( EnsureActorHasNetID( pActor ) == false )
+		return;
+
+	NetCommand command ( SVC2_STOPALLSOUNDSONTHING );
+	command.addShort( pActor->NetID );
 	command.sendCommandToClients();
 }
 
@@ -3728,7 +4338,7 @@ void SERVERCOMMANDS_PlayBounceSound( const AActor *pActor, const bool bOnfloor, 
 		return;
 
 	NetCommand command ( SVC2_PLAYBOUNCESOUND );
-	command.addShort ( pActor->lNetID );
+	command.addShort ( pActor->NetID );
 	command.addByte ( bOnfloor );
 	command.sendCommandToClients ( ulPlayerExtra, flags );
 }
@@ -4297,7 +4907,7 @@ void SERVERCOMMANDS_Earthquake( AActor *pCenter, LONG lIntensity, LONG lDuration
 	const char *pszQuakeSound = S_GetName( Quakesound );
 
 	NetCommand command ( SVC_EARTHQUAKE );
-	command.addShort ( pCenter->lNetID );
+	command.addShort ( pCenter->NetID );
 	command.addByte ( lIntensity );
 	command.addShort ( lDuration );
 	command.addShort ( lTemorRadius );
@@ -4430,7 +5040,7 @@ void SERVERCOMMANDS_SetCameraToTexture( AActor *pCamera, char *pszTexture, LONG 
 	}
 
 	NetCommand command ( SVC_SETCAMERATOTEXTURE );
-	command.addShort ( pCamera->lNetID );
+	command.addShort ( pCamera->NetID );
 	command.addString ( pszTexture );
 	command.addByte ( lFOV );
 	command.sendCommandToClients ( ulPlayerExtra, flags );
@@ -4444,7 +5054,8 @@ void SERVERCOMMANDS_CreateTranslation( ULONG ulTranslation, ULONG ulStart, ULONG
 
 	NetCommand command ( SVC_CREATETRANSLATION );
 	command.addShort ( ulTranslation );
-	command.addByte ( bIsEdited );
+	command.addBit ( bIsEdited );
+	command.addShortByte ( CREATETRANSLATION_PALETTE, 7 );
 	command.addByte ( ulStart );
 	command.addByte ( ulEnd );
 	command.addByte ( ulPal1 );
@@ -4458,9 +5069,10 @@ void SERVERCOMMANDS_CreateTranslation( ULONG ulTranslation, ULONG ulStart, ULONG
 {
 	const bool bIsEdited = SERVER_IsTranslationEdited ( ulTranslation );
 
-	NetCommand command ( SVC_CREATETRANSLATION2 );
+	NetCommand command ( SVC_CREATETRANSLATION );
 	command.addShort ( ulTranslation );
-	command.addByte ( bIsEdited );
+	command.addBit ( bIsEdited );
+	command.addShortByte ( CREATETRANSLATION_RGB, 7 );
 	command.addByte ( ulStart );
 	command.addByte ( ulEnd );
 	command.addByte ( ulR1 );
@@ -4469,6 +5081,27 @@ void SERVERCOMMANDS_CreateTranslation( ULONG ulTranslation, ULONG ulStart, ULONG
 	command.addByte ( ulR2 );
 	command.addByte ( ulG2 );
 	command.addByte ( ulB2 );
+	command.sendCommandToClients ( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+//
+void SERVERCOMMANDS_CreateDesaturatedTranslation( ULONG ulTranslation, ULONG ulStart, ULONG ulEnd, float fR1, float fG1, float fB1, float fR2, float fG2, float fB2, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	const bool bIsEdited = SERVER_IsTranslationEdited ( ulTranslation );
+
+	NetCommand command ( SVC_CREATETRANSLATION );
+	command.addShort ( ulTranslation );
+	command.addBit ( bIsEdited );
+	command.addShortByte ( CREATETRANSLATION_DESATURATED, 7 );
+	command.addByte ( ulStart );
+	command.addByte ( ulEnd );
+	command.addFloat ( fR1 );
+	command.addFloat ( fG1 );
+	command.addFloat ( fB1 );
+	command.addFloat ( fR2 );
+	command.addFloat ( fG2 );
+	command.addFloat ( fB2 );
 	command.sendCommandToClients ( ulPlayerExtra, flags );
 }
 
@@ -4500,14 +5133,14 @@ void SERVERCOMMANDS_SetSectorLink( ULONG ulSector, int iArg1, int iArg2, int iAr
 void SERVERCOMMANDS_DoPusher( ULONG ulType, line_t *pLine, int iMagnitude, int iAngle, AActor *pSource, int iAffectee, ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	const int iLineNum = pLine ? static_cast<ULONG>( pLine - lines ) : -1;
-	const LONG lSourceNetID = pSource ? pSource->lNetID : -1;
+	const unsigned short sourceNetID = pSource ? pSource->NetID : 0;
 
 	NetCommand command ( SVC_DOPUSHER );
 	command.addByte ( ulType );
 	command.addShort ( iLineNum );
 	command.addLong ( iMagnitude );
 	command.addLong ( iAngle );
-	command.addShort ( lSourceNetID );
+	command.addShort ( sourceNetID );
 	command.addShort ( iAffectee );
 	command.sendCommandToClients ( ulPlayerExtra, flags );
 }
@@ -4584,8 +5217,11 @@ void SERVERCOMMANDS_SetCVar( const FBaseCVar &CVar, ULONG ulPlayerExtra, ServerC
 //
 void SERVERCOMMANDS_SyncCVarToAdmins( const FBaseCVar &CVar )
 {
-	for ( AdminClientIterator it; it.notAtEnd(); ++it )
-		SERVERCOMMANDS_SetCVar( CVar, *it, SVCF_ONLYTHISCLIENT );
+	for ( ClientIterator it; it.notAtEnd(); ++it )
+	{
+		if ( SERVER_GetClient( *it )->bRCONAccess )
+			SERVERCOMMANDS_SetCVar( CVar, *it, SVCF_ONLYTHISCLIENT );
+	}
 }
 
 //*****************************************************************************
@@ -4593,7 +5229,7 @@ void SERVERCOMMANDS_SyncCVarToAdmins( const FBaseCVar &CVar )
 void SERVERCOMMANDS_SetDefaultSkybox( ULONG ulPlayerExtra, ServerCommandFlags flags )
 {
 	NetCommand command( SVC2_SETDEFAULTSKYBOX );
-	command.addShort( ( level.DefaultSkybox != NULL ) ? level.DefaultSkybox->lNetID : -1 );
+	command.addShort( ( level.DefaultSkybox != NULL ) ? level.DefaultSkybox->NetID : 0 );
 	command.sendCommandToClients( ulPlayerExtra, flags );
 }
 //*****************************************************************************
@@ -4648,7 +5284,7 @@ void SERVERCOMMANDS_ShootDecal ( const FDecalTemplate* tpl, AActor* actor, fixed
 
 	NetCommand command ( SVC2_SHOOTDECAL );
 	command.addName( tpl->GetName() );
-	command.addShort( actor->lNetID );
+	command.addShort( actor->NetID );
 	command.addShort( z >> FRACBITS );
 	command.addShort( angle >> FRACBITS );
 	command.addLong( tracedist );
@@ -4669,15 +5305,196 @@ void SERVERCOMMANDS_RCONAccess( int client )
 }
 
 //*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_SyncMapRotation( ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	ULONG numEntries = MAPROTATION_GetNumEntries();
+
+	// [AK] Don't bother sending the command if there's no map list.
+	if ( numEntries == 0 )
+		return;
+
+	ServerCommands::SyncMapRotation command;
+	command.SetCurrentPosition( MAPROTATION_GetCurrentPosition() );
+
+	for ( unsigned int i = 0; i < numEntries; i++ )
+	{
+		ServerCommands::MapRotationEntry entry;
+		entry.name = MAPROTATION_GetMap( i )->mapname;
+		entry.isUsed = MAPROTATION_IsUsed( i );
+		entry.minPlayers = MAPROTATION_GetPlayerLimits( i, false );
+		entry.maxPlayers = MAPROTATION_GetPlayerLimits( i, true );
+
+		command.PushToEntries( entry );
+
+		// [AK] If the latest entry won't fit into a single packet, remove it from the list and send out
+		// what we already have. We'll then send another packet containing this entry and more.
+		if ( static_cast<ULONG>( command.BuildNetCommand().calcSize() ) + PACKET_HEADER_SIZE >= SERVER_GetMaxPacketSize() )
+		{
+			command.PopFromEntries( entry );
+			command.sendCommandToClients( ulPlayerExtra, flags );
+			command.ClearEntries();
+			command.PushToEntries( entry );
+		}
+	}
+
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_AddToMapRotation( const char *pszMapName, int position, ULONG ulMinPlayers, ULONG ulMaxPlayers, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if (( pszMapName == NULL ) || ( FindLevelByName( pszMapName ) == NULL ))
+		return;
+
+	NetCommand command ( SVC2_UPDATEMAPROTATION );
+	command.addByte( UPDATE_MAPROTATION_ADDMAP );
+	command.addString( pszMapName );
+	command.addShort( position );
+	command.addByte( ulMinPlayers );
+	command.addByte( ulMaxPlayers );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_DelFromMapRotation( const char *pszMapName, bool bClear, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	NetCommand command ( SVC2_UPDATEMAPROTATION );
+	command.addByte( bClear ? UPDATE_MAPROTATION_CLEAR : UPDATE_MAPROTATION_DELMAP );
+
+	// [AK] We should only send a map name if we're not clearing the map list.
+	if ( bClear == false )
+	{
+		if (( pszMapName == NULL ) || ( FindLevelByName( pszMapName ) == NULL ))
+			return;
+
+		command.addString( pszMapName );
+	}
+
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_ResetMapRotation( ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	NetCommand command ( SVC2_UPDATEMAPROTATION );
+	command.addByte( UPDATE_MAPROTATION_RESET );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_SetNextMapPosition( unsigned int playerExtra, ServerCommandFlags flags )
+{
+	NetCommand command( SVC2_UPDATEMAPROTATION );
+	command.addByte( UPDATE_MAPROTATION_SETNEXTPOSITION );
+	command.addShort( MAPROTATION_GetNextPosition( ));
+	command.addBit( MAPROTATION_ShouldNextMapIgnoreLimits( ));
+	command.sendCommandToClients( playerExtra, flags );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_SetCustomPlayerValue( PlayerData &Data, ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if ( PLAYER_IsValidPlayer( ulPlayer ) == false )
+		return;
+
+	ServerCommands::SetCustomPlayerValue command;
+	command.SetIndex( Data.GetIndex( ));
+	command.SetPlayer( ulPlayer );
+	command.SetValue( Data.GetValue( ulPlayer ).ToString( ));
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_ResetCustomPlayerValue( PlayerData &Data, ULONG ulPlayer, ULONG ulPlayerExtra, ServerCommandFlags flags )
+{
+	if (( ulPlayer != MAXPLAYERS ) && ( PLAYER_IsValidPlayer( ulPlayer ) == false ))
+		return;
+
+	ServerCommands::ResetCustomPlayerValue command;
+	command.SetIndex( Data.GetIndex( ));
+	command.SetPlayer( ulPlayer );
+	command.sendCommandToClients( ulPlayerExtra, flags );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_OpenMenu( const unsigned int player, const char *menuName )
+{
+	if (( PLAYER_IsValidPlayer( player ) == false ) || ( menuName == nullptr ) || ( strlen( menuName ) == 0 ))
+		return;
+
+	ServerCommands::OpenMenu command;
+	command.SetMenu( menuName );
+	command.sendCommandToClients( player, SVCF_ONLYTHISCLIENT );
+}
+
+//*****************************************************************************
+// [AK]
+void SERVERCOMMANDS_CloseMenu( const unsigned int player )
+{
+	ServerCommands::CloseMenu command;
+	command.sendCommandToClients( player, SVCF_ONLYTHISCLIENT );
+}
+
+//*****************************************************************************
+// [SB]
+void SERVERCOMMANDS_StartConversation( AActor *npc, ULONG player, int nodenum, bool facetalker, bool saveangle )
+{
+	if ( !EnsureActorHasNetID( npc ) || !PLAYER_IsValidPlayerWithMo( player ) )
+		return;
+
+	ServerCommands::StartConversation command;
+	command.SetNpc( npc );
+	command.SetPlayer( &players[player] );
+	command.SetNode( nodenum );
+	command.SetFacetalker( facetalker );
+	command.SetSaveangle( saveangle );
+	command.sendCommandToClients();
+}
+
+//*****************************************************************************
+// [SB]
+void SERVERCOMMANDS_ConversationReply( ULONG player, int nodenum, int replynum )
+{
+	if ( !PLAYER_IsValidPlayerWithMo( player ) )
+		return;
+
+	ServerCommands::ConversationReply command;
+	command.SetPlayer( &players[player] );
+	command.SetNode( nodenum );
+	command.SetReply( replynum );
+	command.sendCommandToClients();
+}
+
+//*****************************************************************************
+// [SB]
+void SERVERCOMMANDS_EndConversation( ULONG player )
+{
+	if ( !PLAYER_IsValidPlayerWithMo( player ) )
+		return;
+
+	ServerCommands::EndConversation command;
+	command.SetPlayer( &players[player] );
+	command.sendCommandToClients();
+}
+
+//*****************************************************************************
 void APathFollower::SyncWithClient ( const ULONG ulClient )
 {
 	if ( !EnsureActorHasNetID (this) )
 		return;
 
 	NetCommand command( SVC2_SYNCPATHFOLLOWER );
-	command.addShort( this->lNetID );
-	command.addShort( this->CurrNode ? this->CurrNode->lNetID : -1 );
-	command.addShort( this->PrevNode ? this->PrevNode->lNetID : -1 );
+	command.addShort( this->NetID );
+	command.addShort( this->CurrNode ? this->CurrNode->NetID : 0 );
+	command.addShort( this->PrevNode ? this->PrevNode->NetID : 0 );
 	command.addFloat( this->Time );
 	command.sendCommandToOneClient( ulClient );
 }

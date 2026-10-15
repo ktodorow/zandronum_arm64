@@ -893,17 +893,6 @@ FString NicePath(const char *path)
 
 	if (path[1] == '/' || path[1] == '\0')
 	{ // Get my home directory
-	
-		if (getenv("HOME"))
-		{
-			FString where(getenv("HOME"));
-			slash = path + 1;
-			if (*slash != '\0')
-			{
-				where += ExpandEnvVars(slash);
-			}
-			return where;
-		}
 		pwstruct = getpwuid(getuid());
 		slash = path + 1;
 	}

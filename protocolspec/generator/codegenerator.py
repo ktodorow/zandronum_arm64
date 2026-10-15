@@ -377,8 +377,9 @@ class HeaderWriter(SourceCodeWriter):
 				{
 					BuildNetCommand().sendCommandToClients( playerExtra, flags );
 				}
-			};
-		''')
+			};''')
+
+		self.writeline('')
 
 		# For each server command, create a class to represent it.
 		for command in self.getcommands('GameServerToClient'):
@@ -509,6 +510,11 @@ def main():
 	argparser.add_argument('--header', required = True)
 	args = argparser.parse_args()
 
+	# Hax sys.path so that python can find all the modules under Windows
+	import sys
+	import os.path
+	sys.path.insert(1, os.path.dirname(os.path.realpath(__file__)))
+
 	# Parse the specification file
 	from spec import NetworkSpec
 	spec = NetworkSpec()
@@ -536,4 +542,5 @@ def main():
 		return 0
 
 if __name__ == '__main__':
+	from sys import exit
 	exit(main())

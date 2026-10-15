@@ -60,6 +60,29 @@
 #define	VOTE_COUNTDOWN_TIME				15
 #define	VOTE_PASSED_TIME				4
 
+// [AK] Definitions for whether we (the local player) voted yes or no.
+#define VOTE_UNDECIDED					0
+#define VOTE_YES						1
+#define VOTE_NO							2
+
+//*****************************************************************************
+enum
+{
+	FORBIDVOTE_KICK			= 1 << 0,
+	FORBIDVOTE_FORCESPEC	= 1 << 1,
+	FORBIDVOTE_MAP			= 1 << 2,
+	FORBIDVOTE_CHANGEMAP	= 1 << 3,
+	FORBIDVOTE_FRAGLIMIT	= 1 << 4,
+	FORBIDVOTE_TIMELIMIT	= 1 << 5,
+	FORBIDVOTE_WINLIMIT		= 1 << 6,
+	FORBIDVOTE_DUELLIMIT	= 1 << 7,
+	FORBIDVOTE_POINTLIMIT	= 1 << 8,
+	FORBIDVOTE_FLAG			= 1 << 9,
+	FORBIDVOTE_NEXTMAP		= 1 << 10,
+	FORBIDVOTE_NEXTSECRET	= 1 << 11,
+	FORBIDVOTE_RESETMAP		= 1 << 12,
+};
+
 //*****************************************************************************
 enum
 {
@@ -72,7 +95,13 @@ enum
 	VOTECMD_WINLIMIT,
 	VOTECMD_DUELLIMIT,
 	VOTECMD_POINTLIMIT,
+	VOTECMD_FLAG,
+	VOTECMD_NEXTMAP,
+	VOTECMD_NEXTSECRET,
+	VOTECMD_RESETMAP,
 
+	// [AK] Custom vote definitions start after NUM_VOTECMDS
+	// ( i.e. the first one is indexed with NUM_VOTECMDS + 1 ).
 	NUM_VOTECMDS
 };
 
@@ -84,6 +113,28 @@ typedef enum
 	VOTESTATE_VOTECOMPLETED,
 
 } VOTESTATE_e;
+
+struct VOTETYPE_s
+{
+	enum class parametertype_e
+	{
+		NONE,
+		INT,
+		FLOAT,
+		STRING,
+		PLAYER,
+		MAP
+	};
+	FString name;
+	FString displayName;
+	FString menu;
+	FString menuName;
+	FString scriptName;
+	FString preflightScript;
+	FString forbidCvarName;
+	parametertype_e parameterType = parametertype_e::NONE;
+};
+
 
 //*****************************************************************************
 //	STRUCTURES
@@ -114,8 +165,11 @@ typedef struct
 //	PROTOTYPES
 
 void			CALLVOTE_Construct( void );
+void			CALLVOTE_ReadVoteInfo( void );
+const TArray<VOTETYPE_s> &CALLVOTE_GetCustomVotes( void );
 void			CALLVOTE_Tick( void );
-//void			CALLVOTE_Render( void );
+void			CALLVOTE_Render( void );
+void			CALLVOTE_RenderClassic( void );
 void			CALLVOTE_BeginVote( FString Command, FString Parameters, FString Reason, ULONG ulPlayer );
 void			CALLVOTE_ClearVote( void );
 bool			CALLVOTE_VoteYes( ULONG ulPlayer );
@@ -123,32 +177,30 @@ bool			CALLVOTE_VoteNo( ULONG ulPlayer );
 ULONG			CALLVOTE_CountNumEligibleVoters( void );
 void			CALLVOTE_EndVote( bool bPassed );
 
-const char		*CALLVOTE_GetCommand( void );
+const char		*CALLVOTE_GetVoteMessage( void );
 const char		*CALLVOTE_GetReason( void );
 void			CALLVOTE_DisconnectedVoter( ULONG ulPlayer );
 void			CALLVOTE_TallyVotes( void );
+ULONG			CALLVOTE_GetYesVoteCount( void );
+ULONG			CALLVOTE_GetNoVoteCount( void );
 ULONG			CALLVOTE_GetVoteCaller( void );
 VOTESTATE_e		CALLVOTE_GetVoteState( void );
 ULONG			CALLVOTE_GetCountdownTicks( void );
 ULONG			*CALLVOTE_GetPlayersWhoVotedYes( void );
 ULONG			*CALLVOTE_GetPlayersWhoVotedNo( void );
 bool			CALLVOTE_ShouldShowVoteScreen( void );
+ULONG			CALLVOTE_GetPlayerVoteChoice( ULONG ulPlayer );
+const VOTETYPE_s *CALLVOTE_GetCustomVoteTypeDefinition( ULONG ulVoteType );
+void			CALLVOTE_ConvertCustomVoteParameter( const VOTETYPE_s *customVoteType, FString &Parameters );
 
 //*****************************************************************************
 //	EXTERNAL CONSOLE VARIABLES
 
 EXTERN_CVAR( Int, sv_minvoters );
+EXTERN_CVAR( Int, sv_forbidvoteflags );
 EXTERN_CVAR( Int, sv_nocallvote )
-EXTERN_CVAR( Bool, sv_nokickvote );
-EXTERN_CVAR( Bool, sv_noforcespecvote );
-EXTERN_CVAR( Bool, sv_nomapvote );
-EXTERN_CVAR( Bool, sv_nochangemapvote );
-EXTERN_CVAR( Bool, sv_nofraglimitvote );
-EXTERN_CVAR( Bool, sv_notimelimitvote );
-EXTERN_CVAR( Bool, sv_nowinlimitvote );
-EXTERN_CVAR( Bool, sv_noduellimitvote );
-EXTERN_CVAR( Bool, sv_nopointlimitvote );
 EXTERN_CVAR( Int, sv_votecooldown );
 EXTERN_CVAR( Int, sv_voteconnectwait );
 EXTERN_CVAR( Bool, cl_showfullscreenvote )
+EXTERN_CVAR( Bool, cl_hidevotescreen );
 #endif	// __CALLVOTE_H__

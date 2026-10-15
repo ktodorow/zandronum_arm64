@@ -1,4 +1,5 @@
-cmake_minimum_required( VERSION 2.4 )
+# [SB] Removed for CMake 4.0 compatibility.
+#cmake_minimum_required( VERSION 2.4 )
 
 if( COMMAND cmake_policy )
 	cmake_policy( SET CMP0003 NEW )
@@ -15,7 +16,7 @@ include( CheckLibraryExists )
 find_package( PythonInterp 3 REQUIRED )
 
 if( NOT APPLE )
-	option( NO_ASM "Disable assembly code" ON )
+	option( NO_ASM "Disable assembly code" OFF )
 else( NOT APPLE )
 	# At the moment asm code doesn't work with OS X, so disable by default
 	option( NO_ASM "Disable assembly code" ON )
@@ -53,7 +54,8 @@ endif( CMAKE_SIZEOF_VOID_P MATCHES "8" )
 # a system-wide version.
 
 # Construct version numbers for searching for the FMOD library on Linux.
-set( MINOR_VERSIONS "50" "49" "48" "47" "46" "45" "44" "43" "42" "41"
+# [BB] Added "64" to support 4.44.64.
+set( MINOR_VERSIONS "64" "61" "50" "49" "48" "47" "46" "45" "44" "43" "42" "41"
 	"40" "39" "38" "37" "36" "35" "34" "33" "32" "31" "30" "29" "28"
 	"27" "26" "25" "24" "23" "22" "21" "20" "21" "19" "18" "17" "16"
 	"15" "14" "13" "12" "11" "10" "09" "08" "07" "06" "05" "04" "03"
@@ -77,7 +79,12 @@ set( FMOD_DIR_VERSIONS ${FMOD_DIR_VERSIONS} "../fmod" )
 foreach( majver ${MAJOR_VERSIONS} )
 	foreach( minver ${MINOR_VERSIONS} )
 		set( FMOD_VERSIONS ${FMOD_VERSIONS} "fmodex${X64}-4.${majver}.${minver}" )
-		set( FMOD_DIR_VERSIONS ${FMOD_DIR_VERSIONS} "${CMAKE_HOME_DIRECTORY}/fmodapi4${majver}${minver}linux${X64}" )
+		# FMOD Ex version 4.44 unified 32-bit and 64-bit linux packages into one.
+		if( NOT majver EQUAL "44" )
+			set( FMOD_DIR_VERSIONS ${FMOD_DIR_VERSIONS} "${CMAKE_HOME_DIRECTORY}/fmodapi4${majver}${minver}linux${X64}" )
+		else()
+			set( FMOD_DIR_VERSIONS ${FMOD_DIR_VERSIONS} "${CMAKE_HOME_DIRECTORY}/fmodapi4${majver}${minver}linux" )
+		endif()
 	endforeach( minver ${MINOR_VERSIONS} )
 	foreach( dir ${FMOD_DIR_VERSIONS} )
 		set( FMOD_LOCAL_INC_DIRS ${FMOD_LOCAL_INC_DIRS} "${dir}/api/inc" )
@@ -149,33 +156,6 @@ if( WIN32 )
 	if( NOT DX_LIBS_FOUND )
 		message( FATAL_ERROR "Could not find DirectX 9 libraries" )
 	endif( NOT DX_LIBS_FOUND )
- 	if( NOT NO_OPENAL )
- 
- 		message( STATUS "Looking for al.h" )
- 		set( OPENAL_SEARCH_PATHS
- 			ENV ALSDK_DIR
- 			ENV MINGDIR
- 			"C:/Program Files/OpenAL 1.1 SDK"
- 			"C:/Program Files (x86)/OpenAL 1.1 SDK"
- 			"E:/Programs/Dev/OpenAL"
- 			"E:/Program Files (x86)/OpenAL 1.1 SDK" )
- 
- 		find_path( OPENAL_INCLUDE_DIR al.h
- 		PATHS ${OPENAL_SEARCH_PATHS}
- 		PATH_SUFFIXES include include/AL )
- 		if( OPENAL_INCLUDE_DIR )
- 			message( STATUS "Looking for al.h - found: ${OPENAL_INCLUDE_DIR}" )
- 		else( OPENAL_INCLUDE_DIR )
- 			message( STATUS "Looking for al.h - not found" )
- 		endif( OPENAL_INCLUDE_DIR )
-  
- 		if( NOT OPENAL_INCLUDE_DIR )
- 			set( NO_OPENAL ON )
- 		else( NOT OPENAL_INCLUDE_DIR )
- 			include_directories( ${OPENAL_INCLUDE_DIR} )
- 		endif( NOT OPENAL_INCLUDE_DIR )
- 	endif( NOT NO_OPENAL )
-  
 
 	set( ZDOOM_LIBS
 		wsock32
@@ -191,21 +171,6 @@ if( WIN32 )
 		setupapi
 		oleaut32 
 		DelayImp )
-  	if( NOT NO_OPENAL )
-  		message( STATUS "Looking for OpenAL library" )
-  		find_library( OPENAL_LIBRARY NAMES OpenAL32
-  			PATHS ${OPENAL_SEARCH_PATHS}
-  			PATH_SUFFIXES lib )
-   
-  		if( NOT OPENAL_LIBRARY )
-  			set( NO_OPENAL ON )
-  			message( STATUS "Looking for OpenAL library - not found" )
-  		else( NOT OPENAL_LIBRARY )
-  			set( ZDOOM_LIBS ${ZDOOM_LIBS} "${OPENAL_LIBRARY}" )
-  			message( STATUS "Looking for OpenAL library - found" )
-  		endif( NOT OPENAL_LIBRARY )
-   
-  	endif( NOT NO_OPENAL )
 else( WIN32 )
 	if( APPLE )
 		set( FMOD_SEARCH_PATHS "/Developer/FMOD Programmers API Mac/api" )
@@ -216,11 +181,7 @@ else( WIN32 )
 		# [BL] We need to compile without ASM code for now.
 		# [AL] OpenGL on OS X is enabled by default
 		set( NO_ASM ON )
- 
- 		if( NOT NO_OPENAL )
- 			set( ZDOOM_LIBS ${ZDOOM_LIBS} "-framework OpenAL")
- 		endif( NOT NO_OPENAL )	
- 	else( APPLE )
+	else( APPLE )
 		option( NO_GTK "Disable GTK+ dialogs (Not applicable to Windows)" )
 		option( VALGRIND "Add special Valgrind sequences to self-modifying code" )
 		# [BB] Added SERVERONLY, NO_SOUND and NO_GL.
@@ -271,13 +232,6 @@ else( WIN32 )
 				unset( XCURSOR_LIB )
 			endif( XCURSOR_HEADER )
 		endif( XCURSOR_LIB )
-  		pkg_check_modules( OPENAL openal )
-  		if( NOT OPENAL_FOUND )
-  			set( NO_OPENAL ON )
-  		else( NOT OPENAL_FOUND )
-  			set( ZDOOM_LIBS ${ZDOOM_LIBS} ${OPENAL_LIBRARIES} )
-  			include_directories( ${OPENAL_INCLUDE_DIRS} )
-  		endif( NOT OPENAL_FOUND )
 	endif( APPLE )
 	set( NASM_NAMES nasm )
 	
@@ -333,78 +287,65 @@ if( NOT NO_GL )
 	include_directories( ${OPENGL_INCLUDE_DIR} )
 endif( NOT NO_GL )
 
-if( NOT NO_FMOD )
- 	# Search for FMOD include files
- 	if( NOT WIN32 )
-		find_path( FMOD_INCLUDE_DIR fmod.hpp
- 			PATHS ${FMOD_LOCAL_INC_DIRS} )
- 	endif( NOT WIN32 )
-  
- 	if( NOT FMOD_INCLUDE_DIR )
- 		find_path( FMOD_INCLUDE_DIR fmod.hpp
- 			PATHS ${FMOD_SEARCH_PATHS}
- 			${FMOD_INC_PATH_SUFFIXES} )
- 	endif( NOT FMOD_INCLUDE_DIR )
-  
- 	if( FMOD_INCLUDE_DIR )
- 		message( STATUS "FMOD include files found at ${FMOD_INCLUDE_DIR}" )
- 		include_directories( "${FMOD_INCLUDE_DIR}" )
- 	else( FMOD_INCLUDE_DIR )
- 		message( STATUS "Could not find FMOD include files" )
- 		set( NO_FMOD ON )
- 	endif( FMOD_INCLUDE_DIR )
-endif( NOT NO_FMOD )
- 
-if( NOT NO_FMOD )
- 	# Decide on the name of the FMOD library we want to use.
- 	if( NOT FMOD_LIB_NAME AND MSVC )
- 		set( FMOD_LIB_NAME fmodex${X64}_vc )
- 	endif( NOT FMOD_LIB_NAME AND MSVC )
-  
- 	if( NOT FMOD_LIB_NAME AND BORLAND )
- 		set( FMOD_LIB_NAME fmodex${X64}_bc )
- 	endif( NOT FMOD_LIB_NAME AND BORLAND )
-  
- 	if( NOT FMOD_LIB_NAME )
- 		set( FMOD_LIB_NAME fmodex${X64} )
- 	endif( NOT FMOD_LIB_NAME )
-  
- 	# Search for FMOD library
- 	if( WIN32 OR APPLE )
- 		find_library( FMOD_LIBRARY ${FMOD_LIB_NAME}
- 			PATHS ${FMOD_SEARCH_PATHS}
- 			${FMOD_LIB_PATH_SUFFIXES} )
- 	else( WIN32 OR APPLE )
- 		find_library( FMOD_LIBRARY
- 			NAMES ${FMOD_VERSIONS}
- 			PATHS ${FMOD_LOCAL_LIB_DIRS} )
- 	endif( WIN32 OR APPLE )
- 	
- 	if( FMOD_LIBRARY )
- 		message( STATUS "FMOD library found at ${FMOD_LIBRARY}" )
- 		set( ZDOOM_LIBS ${ZDOOM_LIBS} "${FMOD_LIBRARY}" )
- 	else( FMOD_LIBRARY )
- 		message( STATUS "Could not find FMOD library" )
- 		set( NO_FMOD ON )
- 	endif( FMOD_LIBRARY )
-endif( NOT NO_FMOD )
- 
-if( NO_FMOD )
- 	add_definitions( -DNO_FMOD=1 )
-endif( NO_FMOD )
-if( NO_OPENAL )
- 	add_definitions( -DNO_OPENAL=1 )
-elseif( WITH_GSTREAMER )
- 	add_definitions( -DWITH_GSTREAMER=1 )
-endif( NO_OPENAL )
+# Decide on the name of the FMOD library we want to use.
 
-# Search for libSndFile
+if( NOT FMOD_LIB_NAME AND MSVC )
+	set( FMOD_LIB_NAME fmodex${X64}_vc )
+endif( NOT FMOD_LIB_NAME AND MSVC )
 
-find_package( SndFile )
+if( NOT FMOD_LIB_NAME AND BORLAND )
+	set( FMOD_LIB_NAME fmodex${X64}_bc )
+endif( NOT FMOD_LIB_NAME AND BORLAND )
 
-# Search for libmpg123
+if( NOT FMOD_LIB_NAME )
+	set( FMOD_LIB_NAME fmodex${X64} )
+endif( NOT FMOD_LIB_NAME )
 
-find_package( MPG123 )
+
+# Search for FMOD include files
+
+if( NOT WIN32 )
+	find_path( FMOD_INCLUDE_DIR fmod.hpp
+		PATHS ${FMOD_LOCAL_INC_DIRS} )
+endif( NOT WIN32 )
+
+if( NOT FMOD_INCLUDE_DIR )
+	find_path( FMOD_INCLUDE_DIR fmod.hpp
+		PATHS ${FMOD_SEARCH_PATHS}
+		${FMOD_INC_PATH_SUFFIXES} )
+endif( NOT FMOD_INCLUDE_DIR )
+
+if( FMOD_INCLUDE_DIR )
+	message( STATUS "FMOD include files found at ${FMOD_INCLUDE_DIR}" )
+else( FMOD_INCLUDE_DIR )
+	# [BB] Without sound, we don't need FMOD.
+	if ( NOT NO_SOUND )
+		message( SEND_ERROR "Could not find FMOD include files" )
+	endif ( NOT NO_SOUND )
+endif( FMOD_INCLUDE_DIR )
+
+
+# Search for FMOD library
+
+if( WIN32 OR APPLE )
+	find_library( FMOD_LIBRARY ${FMOD_LIB_NAME}
+		PATHS ${FMOD_SEARCH_PATHS}
+		${FMOD_LIB_PATH_SUFFIXES} )
+else( WIN32 OR APPLE )
+	find_library( FMOD_LIBRARY
+		NAMES ${FMOD_VERSIONS}
+		PATHS ${FMOD_LOCAL_LIB_DIRS} )
+endif( WIN32 OR APPLE )
+
+if( FMOD_LIBRARY )
+	message( STATUS "FMOD library found at ${FMOD_LIBRARY}" )
+else( FMOD_LIBRARY )
+	# [BB] Without sound, we don't need FMOD.
+	if ( NOT NO_SOUND )
+		message( SEND_ERROR "Could not find FMOD library" )
+	endif ( NOT NO_SOUND )
+endif( FMOD_LIBRARY )
+
 
 # Search for FluidSynth
 
@@ -704,10 +645,8 @@ endif( BACKPATCH )
 
 # Update gitinfo.h
 
-get_target_property( UPDATEREVISION_EXE updaterevision LOCATION )
-
 add_custom_target( revision_check ALL
-	COMMAND ${UPDATEREVISION_EXE} src/gitinfo.h
+	COMMAND updaterevision src/gitinfo.h
 	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 	DEPENDS updaterevision )
 
@@ -717,11 +656,8 @@ message( STATUS "Fluid synth libs: ${FLUIDSYNTH_LIBRARIES}" )
 set( ZDOOM_LIBS ${ZDOOM_LIBS} "${ZLIB_LIBRARIES}" "${JPEG_LIBRARIES}" "${BZIP2_LIBRARIES}" "${GME_LIBRARIES}" )
 # [BB] Without sound, we don't need FMOD.
 if ( NOT NO_SOUND )
- 	set( ZDOOM_LIBS ${ZDOOM_LIBS} )
- 	if( NOT NO_FMOD )
- 		set( ZDOOM_LIBS ${ZDOOM_LIBS} "${FMOD_LIBRARY}" )
- 	endif( NOT NO_FMOD )
- 	include_directories( "${ZLIB_INCLUDE_DIR}" "${BZIP2_INCLUDE_DIR}" "${LZMA_INCLUDE_DIR}" "${JPEG_INCLUDE_DIR}" "${GME_INCLUDE_DIR}" )
+	set( ZDOOM_LIBS ${ZDOOM_LIBS} "${FMOD_LIBRARY}" )
+	include_directories( "${ZLIB_INCLUDE_DIR}" "${FMOD_INCLUDE_DIR}" "${BZIP2_INCLUDE_DIR}" "${LZMA_INCLUDE_DIR}" "${JPEG_INCLUDE_DIR}" "${GME_INCLUDE_DIR}" )
 else ( NOT NO_SOUND )
 	include_directories( "${ZLIB_INCLUDE_DIR}" "${BZIP2_INCLUDE_DIR}" "${LZMA_INCLUDE_DIR}" "${JPEG_INCLUDE_DIR}" "${GME_INCLUDE_DIR}" )
 endif ( NOT NO_SOUND )
@@ -730,15 +666,17 @@ endif ( NOT NO_SOUND )
 FIND_PACKAGE ( OpenSSL REQUIRED )
 include_directories( ${OPENSSL_INCLUDE_DIR} )
 set ( ZDOOM_LIBS ${ZDOOM_LIBS} ${OPENSSL_LIBRARIES} )
+if( WIN32 )
+	set ( ZDOOM_LIBS ${ZDOOM_LIBS} crypt32 )
+endif ( WIN32 )
 
-if( SNDFILE_FOUND )
-    set( ZDOOM_LIBS ${ZDOOM_LIBS} "${SNDFILE_LIBRARIES}" )
-    include_directories( "${SNDFILE_INCLUDE_DIRS}" )
-endif( SNDFILE_FOUND )
-if( MPG123_FOUND )
-    set( ZDOOM_LIBS ${ZDOOM_LIBS} "${MPG123_LIBRARIES}" )
-    include_directories( "${MPG123_INCLUDE_DIR}" )
-endif( MPG123_FOUND )
+# [AK] We need Opus for encoding/decoding VoIP audio packets, and RNNoise for noise suppression.
+if ( NOT NO_SOUND )
+	find_package( Opus REQUIRED )
+	include_directories( ${OPUS_INCLUDE_DIR} )
+	set( ZDOOM_LIBS ${ZDOOM_LIBS} ${OPUS_LIBRARIES} rnnoise )
+endif ( NOT NO_SOUND )
+
 if( NOT DYN_FLUIDSYNTH)
 	if( FLUIDSYNTH_FOUND )
 		set( ZDOOM_LIBS ${ZDOOM_LIBS} "${FLUIDSYNTH_LIBRARIES}" )
@@ -859,17 +797,14 @@ else( NO_ASM )
 	endif( X64 )
 endif( NO_ASM )
 
-get_target_property( LEMON_EXE lemon LOCATION )
-get_target_property( RE2C_EXE re2c LOCATION )
-
 add_custom_command( OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/xlat_parser.c ${CMAKE_CURRENT_BINARY_DIR}/xlat_parser.h
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/xlat/xlat_parser.y .
-	COMMAND ${LEMON_EXE} xlat_parser.y
+	COMMAND lemon xlat_parser.y
 	WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 	DEPENDS lemon ${CMAKE_CURRENT_SOURCE_DIR}/xlat/xlat_parser.y )
 
 add_custom_command( OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/sc_man_scanner.h
-	COMMAND ${RE2C_EXE} --no-generation-date -s -o ${CMAKE_CURRENT_BINARY_DIR}/sc_man_scanner.h ${CMAKE_CURRENT_SOURCE_DIR}/sc_man_scanner.re
+	COMMAND re2c --no-generation-date -s -o ${CMAKE_CURRENT_BINARY_DIR}/sc_man_scanner.h ${CMAKE_CURRENT_SOURCE_DIR}/sc_man_scanner.re
 	DEPENDS re2c ${CMAKE_CURRENT_SOURCE_DIR}/sc_man_scanner.re )
 
 include_directories( ${CMAKE_CURRENT_BINARY_DIR} )
@@ -886,12 +821,6 @@ else( SSE_MATTERS )
 	set( X86_SOURCES )
 endif( SSE_MATTERS )
 
-if( SNDFILE_FOUND )
-    add_definitions( -DHAVE_SNDFILE )
-endif( SNDFILE_FOUND )
-if( MPG123_FOUND )
-    add_definitions( -DHAVE_MPG123 )
-endif( MPG123_FOUND )
 if( DYN_FLUIDSYNTH )
 	add_definitions( -DHAVE_FLUIDSYNTH -DDYN_FLUIDSYNTH )
 elseif( FLUIDSYNTH_FOUND )
@@ -1292,6 +1221,7 @@ add_executable( zdoom WIN32
 	s_sound.cpp
 	sc_man.cpp
 	scoreboard.cpp #ST
+	scoreboard_margin.cpp #ZA
 	sectinfo.cpp #ST
 	st_stuff.cpp
 	statistics.cpp
@@ -1318,6 +1248,7 @@ add_executable( zdoom WIN32
 	v_pfx.cpp
 	v_text.cpp
 	v_video.cpp
+	voicechat.cpp #ZA
 	w_wad.cpp
 	wi_stuff.cpp
 	za_database.cpp #ZA
@@ -1346,7 +1277,6 @@ add_executable( zdoom WIN32
 	g_shared/a_debris.cpp
 	g_shared/a_decals.cpp
 	g_shared/a_fastprojectile.cpp
-	g_shared/a_flags.cpp #ST
 	g_shared/a_flashfader.cpp
 	g_shared/a_fountain.cpp
 	g_shared/a_hatetarget.cpp
@@ -1370,6 +1300,7 @@ add_executable( zdoom WIN32
 	g_shared/a_spark.cpp
 	g_shared/a_specialspot.cpp
 	g_shared/a_springpad.cpp #ST
+	g_shared/a_teamitems.cpp #ZA
 	g_shared/a_waterzone.cpp
 	g_shared/a_weaponpiece.cpp
 	g_shared/a_weapons.cpp
@@ -1420,7 +1351,6 @@ add_executable( zdoom WIN32
 	sound/fmodsound.cpp
 	sound/i_music.cpp
 	sound/i_sound.cpp
-	sound/mpg123_decoder.cpp
 	sound/music_cd.cpp
 	sound/music_dumb.cpp
 	sound/music_gme.cpp
@@ -1438,8 +1368,6 @@ add_executable( zdoom WIN32
 	sound/music_timidity_mididevice.cpp
 	sound/music_win_mididevice.cpp
 	sound/music_pseudo_mididevice.cpp
-	sound/oalsound.cpp
-	sound/sndfile_decoder.cpp
 	textures/animations.cpp
 	textures/anim_switches.cpp
 	textures/automaptexture.cpp
@@ -1540,6 +1468,7 @@ include_directories( .
 	xlat
 	../gdtoa
 	../dumb/include
+	../rnnoise/ #ZA
         ../sqlite/ #ZA
 	../upnpnat/ #ST
 	${CMAKE_BINARY_DIR}/gdtoa
@@ -1587,8 +1516,6 @@ if( MSVC )
 			COMMENT "Adding manifest..."
 		)
 	endif( NO_GENERATOR_EXPRESSIONS )
-
-	create_default_target_launcher( zdoom WORKING_DIRECTORY ${ZDOOM_OUTPUT_DIR} )
 endif( MSVC )
 
 if( NOT WIN32 )
@@ -1631,9 +1558,9 @@ add_custom_target( protocolspec ALL
 	COMMAND ${PYTHON_EXECUTABLE}
 		"${CMAKE_SOURCE_DIR}/protocolspec/generator/codegenerator.py"
 		--spec "${CMAKE_SOURCE_DIR}/protocolspec/spec.txt"
-		--source "network/servercommands.cpp"
-		--header "network/servercommands.h"
-	WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} )
+		--source "${CMAKE_SOURCE_DIR}/src/network/servercommands.cpp"
+		--header "${CMAKE_SOURCE_DIR}/src/network/servercommands.h"
+	WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/protocolspec/generator" )
 
 # [BB]
 if ( WIN32 )

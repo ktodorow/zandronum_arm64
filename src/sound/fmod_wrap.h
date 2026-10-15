@@ -2,8 +2,6 @@
 #ifndef FMOD_WRAP_H
 #define FMOD_WRAP_H
 
-#ifndef NO_FMOD
-
 #if !defined(_WIN32) || defined(_MSC_VER)
 // Use the real C++ interface if it's supported on this platform.
 #include "fmod.hpp"
@@ -610,6 +608,5 @@ namespace FMOD
 	};
 }
 
-#endif
 #endif
 #endif

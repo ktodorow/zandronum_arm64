@@ -57,7 +57,7 @@
 #include "network.h"
 #include "gamemode.h"
 #include "sv_main.h"
-#include "scoreboard.h"
+#include "st_hud.h"
 #include "team.h"
 
 #define HUMETA_AltIcon 0x10f000
@@ -282,27 +282,20 @@ static void DrawStatus(player_t * CPlayer, int x, int y)
 	}
 
 	// [TP] Draw rank and spread
-	if (( hud_showdmstats ) && ( SCOREBOARD_ShouldDrawRank( CPlayer - players )))
+	if (( hud_showdmstats ) && ( HUD_ShouldDrawRank( CPlayer - players )))
 	{
 		FString stat;
 
 		// [TP] Let's use the scoreboard's color here, I guess?
 		// I suppose the scoreboard and hud should always show the same player.
-		switch ( SCOREBOARD_GetRank() )
-		{
-			case 0: stat = TEXTCOLOR_BLUE; break;
-			case 1: stat = TEXTCOLOR_RED; break;
-			case 2: stat = TEXTCOLOR_GREEN; break;
-		}
-
-		stat += SCOREBOARD_SpellOrdinal( SCOREBOARD_GetRank() );
+		stat = HUD_SpellOrdinal( HUD_GetRank(), true );
 
 		// [TP] Indicate tied status with an asterisk
-		if ( SCOREBOARD_IsTied( CPlayer - players ))
+		if ( HUD_IsTied( CPlayer - players ))
 			stat += "*";
 
-		stat.AppendFormat (" (%s%ld)", ( SCOREBOARD_GetSpread() > 0 ? "+" : "" ),
-			SCOREBOARD_GetSpread() );
+		stat.AppendFormat (" (%s%ld)", ( HUD_GetSpread() > 0 ? "+" : "" ),
+			HUD_GetSpread() );
 		DrawStatLine( x, y, "", stat );
 	}
 }
@@ -856,7 +849,7 @@ static int GetScoreForTeam( int t )
 	else if ( GAMEMODE_GetCurrentFlags() & GMF_PLAYERSEARNWINS )
 		return TEAM_GetWinCount( t );
 
-	return TEAM_GetScore( t );
+	return TEAM_GetPointCount( t );
 }
 
 static bool TeamScoreSorter( const int& t1, const int& t2 )
@@ -879,9 +872,9 @@ static void DrawTeamScores( int x, int y )
 		int leadingTeam = !!( scores[1] > scores[0] );
 		int losingTeam = 1 - leadingTeam;
 
-		text.Format ("\\c%c%d\\cC - \\c%c%d",
-			V_GetColorChar( TEAM_GetTextColor( leadingTeam )), scores[leadingTeam],
-			V_GetColorChar( TEAM_GetTextColor( losingTeam )), scores[losingTeam] );
+		text.Format ("\\c%s%d\\cC - \\c%s%d",
+			TEAM_GetTextColorName( leadingTeam ), scores[leadingTeam],
+			TEAM_GetTextColorName( losingTeam ), scores[losingTeam] );
 	}
 	else
 	{
@@ -894,7 +887,7 @@ static void DrawTeamScores( int x, int y )
 				text += "\\cC - ";
 
 			text += "\\c";
-			text += V_GetColorChar( TEAM_GetTextColor( teams[i] ));
+			text += TEAM_GetTextColorName( teams[i] );
 			text.AppendFormat( "%d", GetScoreForTeam( teams[i] ));
 		}
 	}

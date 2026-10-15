@@ -67,6 +67,8 @@
 #include "invasion.h"
 #include "cl_demo.h"
 #include "p_acs.h"
+#include "g_game.h"
+#include "gamemode.h"
 
 #define FUNC(a) static int a (line_t *ln, AActor *it, bool backSide, \
 	int arg0, int arg1, int arg2, int arg3, int arg4)
@@ -975,7 +977,7 @@ FUNC(LS_ThrustThing)
 static void ThrustThingHelper (AActor *it, angle_t angle, int force, INTBOOL nolimit)
 {
 	// [BB] This is server side.
-	if ( ( NETWORK_IsConsolePlayerOrNotInClientMode ( it->player ) == false ) && !( it->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) )
+	if ( ( NETWORK_IsConsolePlayerOrNotInClientMode ( it->player ) == false ) && !( it->NetworkFlags & NETFL_CLIENTSIDEONLY ) )
 		return;
 
 	angle >>= ANGLETOFINESHIFT;
@@ -1028,7 +1030,7 @@ FUNC(LS_ThrustThingZ)	// [BC]
 	else if (it)
 	{
 		// [BB] This is server side.
-		if ( ( NETWORK_IsConsolePlayerOrNotInClientMode ( it->player ) ) || ( it->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) )
+		if ( ( NETWORK_IsConsolePlayerOrNotInClientMode ( it->player ) ) || ( it->NetworkFlags & NETFL_CLIENTSIDEONLY ) )
 		{
 			if (!arg3)
 				it->velz = thrust;
@@ -1166,7 +1168,7 @@ FUNC(LS_HealThing)
 				if ( it->player->cheats & CF_PROSPERITY )
 					max = deh.MaxSoulsphere + 50;
 				else
-					max = it->GetDefault()->health + it->player->lMaxHealthBonus;
+					max = it->GetDefault()->health + it->player->MaxHealthBonus;
 			}
 			else
 			{
@@ -1178,7 +1180,7 @@ FUNC(LS_HealThing)
 		else if (max == 1)
 		{
 			// [BC] Include the player's max. health bonus in the max. allowed health.
-			max = deh.MaxSoulsphere + it->player->lMaxHealthBonus;
+			max = deh.MaxSoulsphere + it->player->MaxHealthBonus;
 		}
 
 		// If health is already above max, do nothing
@@ -2078,7 +2080,7 @@ FUNC(LS_Sector_ChangeFlags)
 // [BC] Start of new Skulltag linespecials.
 
 FUNC( LS_Player_SetTeam )
-// Player_SetTeam( team id )
+// Player_SetTeam( int teamid, bool nobroadcast )
 {
 	// Don't set teams on the client end.
 	if ( NETWORK_InClientMode() )
@@ -2093,12 +2095,10 @@ FUNC( LS_Player_SetTeam )
 		I_Error( "Tried to set player to bad team, %d\n", arg0 );
 
 	// Set the player's team.
-	PLAYER_SetTeam( it->player, arg0, false );
+	PLAYER_SetTeam( it->player, arg0, !!arg1 );
 	return ( true );
 }
 
-void SERVERCONSOLE_UpdatePlayerInfo( LONG lPlayer, ULONG ulUpdateFlags );
-void SERVERCONSOLE_UpdateScoreboard( void );
 FUNC( LS_Team_Score )
 // Team_Score (int howmuch, bool nogrin)
 {
@@ -2106,15 +2106,15 @@ FUNC( LS_Team_Score )
 	if ( NETWORK_InClientMode() )
 		return ( false );
 
-	// Nothing to do if we're not in teamgame mode.
-	if ( teamgame == false )
+	// [AK] Nothing to do if the current gamemode doesn't support teams and give points.
+	if (( GAMEMODE_GetCurrentFlags() & ( GMF_PLAYERSONTEAMS | GMF_PLAYERSEARNPOINTS )) != ( GMF_PLAYERSONTEAMS | GMF_PLAYERSEARNPOINTS ))
 		return ( false );
 
 	// Make sure a valid player is doing the scoring.
 	if ( !it || !it->player || it->player->bOnTeam == false )
 		return ( false );
 
-	TEAM_SetScore( it->player->ulTeam, TEAM_GetScore( it->player->ulTeam ) + arg0, true );
+	TEAM_SetPointCount( it->player->Team, TEAM_GetPointCount( it->player->Team ) + arg0, true );
 	PLAYER_SetPoints ( it->player, it->player->lPointCount + arg0 );
 
 	return ( false );
@@ -2127,8 +2127,8 @@ FUNC( LS_Team_GivePoints )
 	if ( NETWORK_InClientMode() )
 		return ( false );
 
-	// Nothing to do if we're not in teamgame mode.
-	if ( teamgame == false )
+	// [AK] Nothing to do if the current gamemode doesn't support teams and give points.
+	if (( GAMEMODE_GetCurrentFlags() & ( GMF_PLAYERSONTEAMS | GMF_PLAYERSEARNPOINTS )) != ( GMF_PLAYERSONTEAMS | GMF_PLAYERSEARNPOINTS ))
 		return ( false );
 
 	// Make sure this is a valid team.
@@ -2136,7 +2136,7 @@ FUNC( LS_Team_GivePoints )
 		return ( false );
 
 	// Give the point(s) to the team.
-	TEAM_SetScore( arg0, TEAM_GetScore( arg0 ) + arg1, !!arg2 );
+	TEAM_SetPointCount( arg0, TEAM_GetPointCount( arg0 ) + arg1, !!arg2 );
 
 	if ( it && it->player && it->player->bOnTeam )
 	{
@@ -2502,7 +2502,9 @@ FUNC(LS_Sector_SetColor)
 	while ((secnum = P_FindSectorFromTag (arg0, secnum)) >= 0)
 	{
 		// [BB] Don't update the clients for each sector separately.
-		sectors[secnum].SetColor(arg1, arg2, arg3, arg4, false);
+		// [AK] Allow clients to set the color since this is purely a visual effect, but only
+		// if the special was called from a CLIENTSIDE ACS script.
+		sectors[secnum].SetColor(arg1, arg2, arg3, arg4, false, ACS_IsCalledFromScript( ));
 	}
 	// [BB] Tell clients to set the color for all sectors with tag arg0.
 	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
@@ -2519,7 +2521,9 @@ FUNC(LS_Sector_SetFade)
 	while ((secnum = P_FindSectorFromTag (arg0, secnum)) >= 0)
 	{
 		// [BB] Don't update the clients for each sector separately.
-		sectors[secnum].SetFade(arg1, arg2, arg3, false);
+		// [AK] Allow clients to set the fade since this is purely a visual effect, but only
+		// if the special was called from a CLIENTSIDE ACS script.
+		sectors[secnum].SetFade(arg1, arg2, arg3, false, ACS_IsCalledFromScript( ));
 	}
 	// [BB] Tell clients to set the fade for all sectors with tag arg0.
 	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
@@ -2764,6 +2768,11 @@ FUNC(LS_Line_SetTextureOffset)
 			}
 		}
 	}
+
+	// [AK] Tell clients to set the texture's offsets for all lines with tag arg0.
+	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+		SERVERCOMMANDS_SetLineTextureOffsetByID( arg0, arg1, arg2, arg3, arg4 );
+
 	return true;
 }
 
@@ -2814,6 +2823,11 @@ FUNC(LS_Line_SetTextureScale)
 			}
 		}
 	}
+
+	// [AK] Tell clients to set the texture's scale for all lines with tag arg0.
+	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+		SERVERCOMMANDS_SetLineTextureScaleByID( arg0, arg1, arg2, arg3, arg4 );
+
 	return true;
 }
 
@@ -2934,6 +2948,15 @@ FUNC(LS_ChangeCamera)
 		{
 			R_ClearPastViewer (it->player->camera);
 		}
+	}
+
+	// [AK] Change the HUD to match the player that we should be looking through.
+	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
+	{
+		if ( players[consoleplayer].camera->player )
+			G_FinishChangeSpy( static_cast<int>( players[consoleplayer].camera->player - players ), true );
+		else
+			G_FinishChangeSpy( consoleplayer, true );
 	}
 
 	return true;
@@ -3325,7 +3348,10 @@ FUNC(LS_SendToCommunicator)
 			// [BB] Play the sound on the client.
 			const ULONG ulPlayer = static_cast<ULONG> ( it->player - players );
 			if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+			{
+				SERVERCOMMANDS_StopOriginlessSound( CHAN_VOICE, ulPlayer, SVCF_ONLYTHISCLIENT );
 				SERVERCOMMANDS_Sound( CHAN_VOICE, name, 1, ATTN_NORM, ulPlayer, SVCF_ONLYTHISCLIENT );
+			}
 
 			if (arg2 == 0)
 			{
@@ -3382,7 +3408,7 @@ FUNC(LS_ClearForceField)
 				line->sidedef[1]->SetTexture(side_t::mid, FNullTextureID());
 
 				// [BC] Mark this line's texture change flags.
-				line->ulTexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
+				line->TexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
 
 				// [BC] If we're the server, tell clients that this line's textures and
 				// blocking status have been altered.
@@ -3504,7 +3530,8 @@ FUNC(LS_StartConversation)
 	{
 		return false;
 	}
-	if (target->Conversation != NULL)
+	// [SB] In multiplayer, the server initiates conversations.
+	if (target->Conversation != NULL && !NETWORK_InClientMode())
 	{
 		// Give the NPC a chance to play a brief animation
 		target->ConversationAnimation (0);
@@ -3905,6 +3932,39 @@ int P_ExecuteSpecial(int			num,
 {
 	if (num >= 0 && num <= 255)
 	{
+		// [AK] If we're the server and the activator is a player, check if they're being extrapolated
+		// or backtraced right now. We want to keep track of any specials this player has executed while
+		// being extrapolated so that if they're backtraced and execute the exact same special again, we
+		// can simply cancel the execution.
+		// Ignore line specials LS_ThrustThing (72) and LS_ThrustThingZ (128), as we should allow these
+		// specials to be repeated by the player during a backtrace.
+		if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( num != 72 && num != 128 ) && ( activator ) && ( activator->player ))
+		{
+			CLIENT_s *pClient = SERVER_GetClient( activator->player - players );
+			CLIENT_SAVED_SPECIAL_s savedSpecial;
+
+			if ( SERVER_IsBacktracingPlayer( activator->player - players ))
+			{
+				for ( unsigned int i = 0; i < pClient->ExtrapolatedSpecials.Size( ); i++ )
+				{
+					savedSpecial = pClient->ExtrapolatedSpecials[i];
+
+					// [AK] If this is the same special, don't execute it again!
+					if (( num == savedSpecial.num ) && ( line == savedSpecial.line ) && ( backSide == savedSpecial.backSide ))
+						return 0;
+				}
+			}
+			else if ( SERVER_IsExtrapolatingPlayer( activator->player - players ))
+			{
+				savedSpecial.num = num;
+				savedSpecial.line = line;
+				savedSpecial.backSide = backSide;
+
+				// [AK] Save the info about this special for later.
+				pClient->ExtrapolatedSpecials.Push( savedSpecial );
+			}
+		}
+
 		return LineSpecials[num](line, activator, backSide, arg1, arg2, arg3, arg4, arg5);
 	}
 	return 0;

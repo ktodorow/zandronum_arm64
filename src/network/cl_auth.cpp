@@ -60,6 +60,7 @@
 #include "network_enums.h"
 #include "gameconfigfile.h"
 #include "version.h"
+#include "cl_demo.h"
 
 //*****************************************************************************
 //	VARIABLES
@@ -70,11 +71,18 @@ static FString g_password;
 CUSTOM_CVAR( Bool, cl_hideaccount, false, CVAR_ARCHIVE )
 {
 	if ( NETWORK_GetState() == NETSTATE_CLIENT )
-		CLIENTCOMMANDS_SetWantHideAccount( self );
+		CLIENTCOMMANDS_SetWantHideInfo( HIDEINFO_ACCOUNTNAME, self );
 }
 
 #ifdef _WIN32
-CVAR( String, login_default_user, "", CVAR_ARCHIVE )
+EXTERN_CVAR( Bool, cl_autologin )
+
+CUSTOM_CVAR( String, login_default_user, "", CVAR_ARCHIVE | CVAR_NOINITCALL )
+{
+	// [AK] Log in automatically when setting a default username, if applicable.
+	if (( NETWORK_GetState( ) == NETSTATE_CLIENT ) && ( CLIENT_IsLoggedIn( ) == false ) && ( cl_autologin ))
+		CLIENT_RetrieveUserAndLogIn( self.GetGenericRep( CVAR_String ).String );
+}
 #endif
 
 //*****************************************************************************
@@ -137,8 +145,8 @@ bool client_RetrieveCredentials ( const FString &Username, FString &Password )
 void client_RequestLogin ( const char* Username, const char* Password )
 {
 	g_password = Password;
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SRP_USER_REQUEST_LOGIN );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, Username );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SRP_USER_REQUEST_LOGIN );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( Username );
 }
 
 //*****************************************************************************
@@ -149,17 +157,17 @@ void client_SRPStartAuthentication ( const char *Username )
     int lenA = 0;
     const char * authUsername = NULL; 
 
-	if ( g_usr != NULL )
-		srp_user_delete( g_usr );
+	CLIENT_LogOut( );
+
 	g_usr = srp_user_new( SRP_SHA256, SRP_NG_2048, Username, reinterpret_cast<const unsigned char*> ( g_password.GetChars() ), g_password.Len(), NULL, NULL, 1 );
 	srp_user_start_authentication( g_usr, &authUsername, &bytesA, &lenA );
 	if ( strcmp( authUsername, Username ) != 0 )
 		Printf ( "Username problem when calling srp_user_start_authentication.\n" );
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SRP_USER_START_AUTHENTICATION );
-	NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, lenA );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SRP_USER_START_AUTHENTICATION );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( lenA );
 	for ( int i = 0; i < lenA; ++i )
-		NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, bytesA[i] );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( bytesA[i] );
 }
 
 //*****************************************************************************
@@ -174,10 +182,10 @@ void client_SRPUserProcessChallenge ( TArray<unsigned char> &Salt, TArray<unsign
 		Printf ( "User SRP-6a safety check violation!\n" );
 	else
 	{
-		NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SRP_USER_PROCESS_CHALLENGE );
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, lenM );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SRP_USER_PROCESS_CHALLENGE );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( lenM );
 		for ( int i = 0; i < lenM; ++i )
-			NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, bytesM[i] );
+			CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( bytesM[i] );
 	}
 }
 
@@ -189,29 +197,29 @@ void CLIENT_ProcessSRPServerCommand( LONG lCommand, BYTESTREAM_s *pByteStream )
 	{
 	case SVC2_SRP_USER_START_AUTHENTICATION:
 		{
-			const FString username = NETWORK_ReadString( pByteStream );
+			const FString username = pByteStream->ReadString();
 			client_SRPStartAuthentication ( username.GetChars() );
 		}
 		break;
 	case SVC2_SRP_USER_PROCESS_CHALLENGE:
 		{
-			const int lenSalt = NETWORK_ReadByte( pByteStream );
+			const int lenSalt = pByteStream->ReadByte();
 			TArray<unsigned char> salt;
 			salt.Resize ( lenSalt ); 
 			for ( int i = 0; i < lenSalt; ++i )
-				salt[i] = NETWORK_ReadByte( pByteStream );
-			const int lenB = NETWORK_ReadShort( pByteStream );
+				salt[i] = pByteStream->ReadByte();
+			const int lenB = pByteStream->ReadShort();
 			TArray<unsigned char> bytesB;
 			bytesB.Resize ( lenB ); 
 			for ( int i = 0; i < lenB; ++i )
-				bytesB[i] = NETWORK_ReadByte( pByteStream );
+				bytesB[i] = pByteStream->ReadByte();
 
 			client_SRPUserProcessChallenge ( salt, bytesB );
 		}
 		break;
 	case SVC2_SRP_USER_VERIFY_SESSION:
 		{
-			const int lenHAMK = NETWORK_ReadShort( pByteStream );
+			const int lenHAMK = pByteStream->ReadShort();
 
 			// [BB] The following crashes if g_usr is not properly initialized.
 			if ( g_usr == NULL )
@@ -221,14 +229,19 @@ void CLIENT_ProcessSRPServerCommand( LONG lCommand, BYTESTREAM_s *pByteStream )
 			// [BB] We may need to allocate more then lenHAMK!
 			bytesHAMK.Resize ( srp_user_get_session_key_length( g_usr ) ); 
 			for ( int i = 0; i < lenHAMK; ++i )
-				bytesHAMK[i] = NETWORK_ReadByte( pByteStream );
+				bytesHAMK[i] = pByteStream->ReadByte();
 
-			srp_user_verify_session( g_usr, &(bytesHAMK[0]) );
+			// [AK] Don't try to verify the session while playing a demo. The
+			// authentication will always fail in this state.
+			if ( CLIENTDEMO_IsPlaying() == false )
+			{
+				srp_user_verify_session( g_usr, &(bytesHAMK[0]) );
 
-			if ( !srp_user_is_authenticated ( g_usr ) )
-				Printf( "Server authentication failed!\n" );
-			else
-				Printf ( "Login successful\n" );
+				if ( !srp_user_is_authenticated ( g_usr ) )
+					Printf( "Server authentication failed!\n" );
+				else
+					Printf( "Login successful.\n" );
+			}
 		}
 		break;
 
@@ -239,12 +252,58 @@ void CLIENT_ProcessSRPServerCommand( LONG lCommand, BYTESTREAM_s *pByteStream )
 }
 
 //*****************************************************************************
+//
+void CLIENT_LogOut( void )
+{
+	if ( g_usr != nullptr )
+	{
+		srp_user_delete( g_usr );
+		g_usr = nullptr;
+	}
+}
+
+//*****************************************************************************
+//
+bool CLIENT_IsLoggedIn( void )
+{
+	return (( g_usr != nullptr ) && ( srp_user_is_authenticated( g_usr )));
+}
+
+//*****************************************************************************
+//
+#ifdef _WIN32
+void CLIENT_RetrieveUserAndLogIn( const FString username )
+{
+	FString password;
+
+	// [AK] Don't try to log in if the username is empty.
+	if ( username.IsEmpty( ))
+		return;
+
+	if ( client_RetrieveCredentials( username, password ))
+		client_RequestLogin( username.GetChars( ), password.GetChars( ));
+	else
+		Printf( "No password saved for user %s. Use login_add to save a password.\n", username.GetChars( ));
+}
+#endif
+
+//*****************************************************************************
 //	CONSOLE COMMANDS
 
 CCMD( login )
 {
 	if ( NETWORK_GetState( ) != NETSTATE_CLIENT )
+	{
+		Printf( "You can't use login if you're not in an online game.\n" );
 		return;
+	}
+
+	// [AK] There's no need to request another login if we're already logged in.
+	if ( CLIENT_IsLoggedIn( ))
+	{
+		Printf( "You are already logged in.\n" );
+		return;
+	}
 
 #ifdef _WIN32
 	if (argv.argc () <= 2)
@@ -263,11 +322,7 @@ CCMD( login )
 		else
 			username = argv[1];
 
-		FString password;
-		if ( client_RetrieveCredentials ( username, password ) )
-			client_RequestLogin ( username.GetChars(), password.GetChars() );
-		else
-			Printf ( "No password saved for user %s. Use login_add to save a password.\n", username.GetChars() );
+		CLIENT_RetrieveUserAndLogIn( username );
 		return;
 	}
 #endif

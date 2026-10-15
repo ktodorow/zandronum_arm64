@@ -120,6 +120,30 @@ void P_SerializePlayers (FArchive &arc, bool skipload)
 		}
 		// Redo pitch limits, since the spawned player has them at 0.
 		players[consoleplayer].SendPitchLimits();
+
+		// [AK] Stuff to do if the local player was spectating.
+		if (players[consoleplayer].bSpectating)
+		{
+			// [AK] If they're a dead spectator, make them a true spectator.
+			if (players[consoleplayer].bDeadSpectator)
+				PLAYER_SetSpectator (&players[consoleplayer], false, false);
+
+			// [AK] Set the NOCLIP flag/cheats depending on whether or not
+			// there should be no physical restrictions.
+			if (players[consoleplayer].mo != nullptr)
+			{
+				if (P_IsSpectatorUnrestricted (players[consoleplayer].mo))
+				{
+					players[consoleplayer].mo->flags |= MF_NOCLIP;
+					players[consoleplayer].cheats |= (CF_FLY | CF_NOCLIP | CF_NOCLIP2);
+				}
+				else
+				{
+					players[consoleplayer].mo->flags &= ~MF_NOCLIP;
+					players[consoleplayer].cheats &= ~(CF_NOCLIP | CF_NOCLIP2);
+				}
+			}
+		}
 	}
 }
 
@@ -490,7 +514,7 @@ void P_SerializeWorld (FArchive &arc)
 		}
 		arc << li->args[1] << li->args[2] << li->args[3] << li->args[4];
 		// [BC]
-		arc << li->ulTexChangeFlags
+		arc << li->TexChangeFlags
 			<< li->SavedSpecial
 			<< li->SavedArgs[0] << li->SavedArgs[1] << li->SavedArgs[2] << li->SavedArgs[3] << li->SavedArgs[4]
 			<< li->SavedFlags
@@ -512,10 +536,7 @@ void P_SerializeWorld (FArchive &arc)
 				<< si->Index;
 			DBaseDecal::SerializeChain (arc, &si->AttachedDecals);
 			// [BC]
-			arc << si->SavedFlags
-				<< si->SavedTopTexture
-				<< si->SavedMidTexture
-				<< si->SavedBottomTexture;
+			arc << si->SavedFlags;
 		}
 	}
 
@@ -555,7 +576,11 @@ void extsector_t::Serialize(FArchive &arc)
 FArchive &operator<< (FArchive &arc, side_t::part &p)
 {
 	arc << p.xoffset << p.yoffset << p.interpolation << p.texture 
-		<< p.xscale << p.yscale;// << p.Light;
+		<< p.xscale << p.yscale 
+
+		// [AK] Store the saved offsets, scale, and texture too.
+		<< p.SavedXOffset << p.SavedYOffset
+		<< p.SavedTexture << p.SavedXScale << p.SavedYScale; // << p.Light;
 	return arc;
 }
 

@@ -153,9 +153,10 @@ struct FOptionMenuDescriptor : public FMenuDescriptor
 	int mPosition;
 	bool mDontDim;
 	bool mNetgameOnly; // [TP]
+	bool mRequiresRCON; // [AK]
 
 	// [BB] The default constructor initializes our custom members.
-	FOptionMenuDescriptor ( ) : mNetgameOnly ( false ) {}
+	FOptionMenuDescriptor ( ) : mNetgameOnly ( false ), mRequiresRCON ( false ) {}
 
 	void CalcIndent();
 	FOptionMenuItem *GetItem(FName name);
@@ -167,6 +168,7 @@ struct FOptionMenuDescriptor : public FMenuDescriptor
 		mIndent = 0;
 		mDontDim = 0;
 		mNetgameOnly = false; // [TP]
+		mRequiresRCON = false; // [AK]
 	}
 
 };
@@ -429,9 +431,11 @@ class FPlayerNameBox : public FListMenuItemSelectable
 	FFont *mFont;
 	EColorRange mFontColor;
 	int mFrameSize;
-	char mPlayerName[MAXPLAYERNAME+1];
-	char mEditName[MAXPLAYERNAME+2];
+	// [AK] Increased the size to MAXPLAYERNAMEBUFFER.
+	char mPlayerName[MAXPLAYERNAMEBUFFER+1];
+	char mEditName[MAXPLAYERNAMEBUFFER+2];
 	bool mEntering;
+	int mNameboxWidth; // [AK]
 
 	void DrawBorder (int x, int y, int len);
 
@@ -697,6 +701,9 @@ DMenu *StartPickerMenu(DMenu *parent, const char *name, FColorCVar *cvar);
 void M_RefreshModesList ();
 void M_InitVideoModesMenu ();
 void M_RconAccessGranted();
+void M_SetLastRconAccessRequest(int tic); // [AK]
+bool M_InServerSetupMenu(); // [AK]
+bool M_IsValidMenu(const char *name); // [AK]
 
 
 

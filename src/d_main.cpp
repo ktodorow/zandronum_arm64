@@ -35,7 +35,7 @@
 #else
 #include <sys/stat.h>
 #endif
-#undef HAVE_FPU_CONTROL
+
 #ifdef HAVE_FPU_CONTROL
 #include <fpu_control.h>
 #endif
@@ -123,6 +123,8 @@
 #include "sectinfo.h"
 #include "md5.h"
 #include "za_database.h"
+#include "st_hud.h"
+#include "p_acs.h"
 
 #include "st_start.h"
 #include "templates.h"
@@ -349,12 +351,14 @@ void D_PostEvent (const event_t *ev)
 			int look = int(ev->y * m_pitch * mouse_sensitivity * 16.0);
 			if (invertmouse)
 				look = -look;
-			G_AddViewPitch (look, true);
+			// [AK] Force interpolation if we're using the old Skulltag mouse movement.
+			G_AddViewPitch (look, !cl_useskulltagmouse);
 			events[eventhead].y = 0;
 		}
 		if (!Button_Strafe.bDown && !lookstrafe)
 		{
-			G_AddViewAngle (int(ev->x * m_yaw * mouse_sensitivity * 8.0), true);
+			// [AK] Force interpolation if we're using the old Skulltag mouse movement.
+			G_AddViewAngle (int(ev->x * m_yaw * mouse_sensitivity * 8.0), !cl_useskulltagmouse);
 			events[eventhead].x = 0;
 		}
 		if ((events[eventhead].x | events[eventhead].y) == 0)
@@ -406,7 +410,8 @@ void D_RemoveNextCharEvent()
 //
 //==========================================================================
 
-CUSTOM_CVAR (Int, dmflags, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK)
+// [AK] Added CVAR_GAMEPLAYFLAGSET.
+CUSTOM_CVAR (Int, dmflags, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYFLAGSET)
 {
 	// In case DF_NO_FREELOOK was changed, reinitialize the sky
 	// map. (If no freelook, then no need to stretch the sky.)
@@ -443,11 +448,8 @@ CUSTOM_CVAR (Int, dmflags, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK)
 	}
 
 	// [BC] If we're the server, tell clients that the dmflags changed.
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
-	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameDMFlags( );
-	}
+	// [AK] Moved everything into a separate function to avoid code duplication.
+	SERVER_FlagsetChanged( self );
 }
 
 CVAR (Flag, sv_nohealth,		dmflags, DF_NO_HEALTH);
@@ -495,14 +497,12 @@ CVAR (Mask, sv_fallingdamage,	dmflags, DF_FORCE_FALLINGHX|DF_FORCE_FALLINGZD);
 //
 //==========================================================================
 
-CUSTOM_CVAR (Int, dmflags2, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK)
+// [AK] Added CVAR_GAMEPLAYFLAGSET.
+CUSTOM_CVAR (Int, dmflags2, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYFLAGSET)
 {
 	// [BC] If we're the server, tell clients that the dmflags changed.
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
-	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameDMFlags( );
-	}
+	// [AK] Moved everything into a separate function to avoid code duplication.
+	SERVER_FlagsetChanged( self );
 
 	// Stop the automap if we aren't allowed to use it.
 	if ((self & DF2_NO_AUTOMAP) && automapactive)
@@ -519,7 +519,8 @@ CUSTOM_CVAR (Int, dmflags2, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK)
 		if (self & DF2_DISALLOW_SPYING)
 		{
 			// The player isn't looking through its own eyes, so make it.
-			if (p->camera != p->mo)
+			// [AK] Allow spectators to keep spying on other actors.
+			if ((p->camera != p->mo) && p->bSpectating == false)
 			{
 				p->camera = p->mo;
 
@@ -539,7 +540,8 @@ CUSTOM_CVAR (Int, dmflags2, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK)
 		if (!(dmflags2 & DF2_CHASECAM) && !G_SkillProperty (SKILLP_DisableCheats) && !sv_cheats)
 		{
 			// Take us out of chasecam mode only.
-			if (p->cheats & CF_CHASECAM)
+			// [AK] Allow spectators to keep using the chasecam.
+			if ((p->cheats & CF_CHASECAM) && p->bSpectating == false)
 				cht_DoCheat (p, CHT_CHASECAM);
 		}
 	}
@@ -570,7 +572,7 @@ CVAR (Flag, sv_nocountendmonst,		dmflags2, DF2_NOCOUNTENDMONST);
 CVAR (Flag, sv_norunes,				dmflags2, DF2_NO_RUNES);
 CVAR (Flag, sv_instantreturn,		dmflags2, DF2_INSTANT_RETURN);
 CVAR (Flag, sv_noteamselect,		dmflags2, DF2_NO_TEAM_SELECT);
-CVAR (Flag, sv_shotgunstart,		dmflags2, DF2_COOP_SHOTGUNSTART);
+CVAR (Flag, sv_shotgunstart,		dmflags2, DF2_SHOTGUNSTART);
 
 //==========================================================================
 //
@@ -584,18 +586,47 @@ EXTERN_CVAR(Int, gl_lightmode)
 EXTERN_CVAR(Int, gl_distfog)
 #endif
 
-CUSTOM_CVAR (Int, zadmflags, 0, CVAR_SERVERINFO)
+// [AK] Added CVAR_CAMPAIGNLOCK and CVAR_GAMEPLAYFLAGSET.
+CUSTOM_CVAR (Int, zadmflags, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYFLAGSET)
 {
 	// [Dusk] If we just turned sv_sharedkeys on, share keys now.
 	if ((( self ^ self.GetPastValue() ) & ZADF_SHARE_KEYS ) & ( self & ZADF_SHARE_KEYS ))
 		SERVER_SyncSharedKeys( MAXPLAYERS, true );
 
-	// [BB] If we're the server, tell clients that the dmflags changed.
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
+	// [AK] If we changed sv_forcesoftwarepitchlimits, reimpose the new pitch limits for everyone.
+	if (( self ^ self.GetPastValue() ) & ZADF_FORCE_SOFTWARE_PITCH_LIMITS )
+		P_ResetPlayerPitchLimits();
+
+	// [AK] If we're the server and just turned sv_donthidestats on, update the health and armor
+	// of all enemy players, for all players.
+	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ((( self ^ self.GetPastValue() ) & ZADF_DONT_HIDE_STATS ) & ( self & ZADF_DONT_HIDE_STATS )))
 	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameDMFlags( );
+		for ( ULONG ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
+		{
+			// [AK] Don't update enemy player stats for bots.
+			if (( players[ulIdx].bIsBot ) || ( players[ulIdx].mo == NULL ))
+				continue;
+
+			for ( ULONG ulOtherIdx = 0; ulOtherIdx < MAXPLAYERS; ulOtherIdx++ )
+			{
+				// [AK] Don't update the player's own stats for themselves.
+				if (( ulOtherIdx != ulIdx ) && ( players[ulIdx].mo->IsTeammate( players[ulOtherIdx].mo ) == false ))
+				{
+					SERVERCOMMANDS_SetPlayerHealth( ulOtherIdx, ulIdx, SVCF_ONLYTHISCLIENT );
+					SERVERCOMMANDS_SetPlayerArmor( ulOtherIdx, ulIdx, SVCF_ONLYTHISCLIENT );
+				}
+			}
+		}
 	}
+
+	// [AK] If we changed sv_dontoverrideplayercolors, rebuild the player translations.
+	// The server doesn't need to do this.
+	if (( NETWORK_GetState( ) != NETSTATE_SERVER ) && (( self ^ self.GetPastValue() ) & ZADF_DONT_OVERRIDE_PLAYER_COLORS ))
+		D_UpdatePlayerColors();
+
+	// [BB] If we're the server, tell clients that the dmflags changed.
+	// [AK] Moved everything into a separate function to avoid code duplication.
+	SERVER_FlagsetChanged( self );
 
 #ifndef NO_GL
 	// [BB/EP] This makes gl_lightmode and gl_distfog handle ZADF_FORCE_VIDEO_DEFAULTS.
@@ -626,6 +657,16 @@ CVAR (Flag, sv_nodrop,				zadmflags, ZADF_NODROP);
 CVAR (Flag, sv_survival_nomapresetondeath, zadmflags, ZADF_SURVIVAL_NO_MAP_RESET_ON_DEATH);
 CVAR (Flag, sv_deadplayerscankeepinventory, zadmflags, ZADF_DEAD_PLAYERS_CAN_KEEP_INVENTORY);
 CVAR (Flag, sv_nounlaggedbfgtracers, zadmflags, ZADF_NOUNLAGGED_BFG_TRACERS);
+CVAR (Flag, sv_nodoorclose, zadmflags, ZADF_NODOORCLOSE);
+CVAR (Flag, sv_forcesoftwarepitchlimits, zadmflags, ZADF_FORCE_SOFTWARE_PITCH_LIMITS);
+CVAR (Flag, sv_shootthroughallies, zadmflags, ZADF_SHOOT_THROUGH_ALLIES);
+CVAR (Flag, sv_dontpushallies, zadmflags, ZADF_DONT_PUSH_ALLIES);
+CVAR (Flag, sv_dontkeepjoinqueue, zadmflags, ZADF_DONT_KEEP_JOIN_QUEUE);
+CVAR (Flag, sv_donthidestats, zadmflags, ZADF_DONT_HIDE_STATS);
+CVAR (Flag, sv_dontoverrideplayercolors, zadmflags, ZADF_DONT_OVERRIDE_PLAYER_COLORS);
+CVAR (Flag, sv_nospawntelefog, zadmflags, ZADF_NO_SPAWN_TELEFOG);
+CVAR (Flag, sv_noallyicons, zadmflags, ZADF_NO_ALLY_ICONS);
+CVAR (Flag, sv_noenemyicons, zadmflags, ZADF_NO_ENEMY_ICONS);
 
 // Old name kept for compatibility
 CVAR (Flag, sv_forcegldefaults,		zadmflags, ZADF_FORCE_VIDEO_DEFAULTS);
@@ -654,7 +695,8 @@ static int GetCompatibility2(int mask)
 }
 
 // [BB] Removed the CVAR_ARCHIVE flag.
-CUSTOM_CVAR (Int, compatflags, 0, CVAR_SERVERINFO)
+// [AK] Added CVAR_CAMPAIGNLOCK and CVAR_GAMEPLAYFLAGSET.
+CUSTOM_CVAR (Int, compatflags, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYFLAGSET)
 {
 	int old = i_compatflags;
 	i_compatflags = GetCompatibility(self) | ii_compatflags;
@@ -664,24 +706,19 @@ CUSTOM_CVAR (Int, compatflags, 0, CVAR_SERVERINFO)
 	}
 
 	// [BC] If we're the server, tell clients that the dmflags changed.
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
-	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameDMFlags( );
-	}
+	// [AK] Moved everything into a separate function to avoid code duplication.
+	SERVER_FlagsetChanged( self );
 }
 
 // [BB] Removed the CVAR_ARCHIVE flag.
-CUSTOM_CVAR (Int, compatflags2, 0, CVAR_SERVERINFO)
+// [AK] Added CVAR_CAMPAIGNLOCK and CVAR_GAMEPLAYFLAGSET.
+CUSTOM_CVAR (Int, compatflags2, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYFLAGSET)
 {
 	i_compatflags2 = GetCompatibility2(self) | ii_compatflags2;
 
 	// [BB] If we're the server, tell clients that compatflags2 changed.
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
-	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameDMFlags( );
-	}
+	// [AK] Moved everything into a separate function to avoid code duplication.
+	SERVER_FlagsetChanged( self );
 }
 
 //==========================================================================
@@ -690,14 +727,12 @@ CUSTOM_CVAR (Int, compatflags2, 0, CVAR_SERVERINFO)
 //
 //==========================================================================
 
-CUSTOM_CVAR (Int, zacompatflags, 0, CVAR_SERVERINFO)
+// [AK] Added CVAR_CAMPAIGNLOCK and CVAR_GAMEPLAYFLAGSET.
+CUSTOM_CVAR (Int, zacompatflags, 0, CVAR_SERVERINFO | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYFLAGSET)
 {
 	// [BC] If we're the server, tell clients that the dmflags changed.
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
-	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameDMFlags( );
-	}
+	// [AK] Moved everything into a separate function to avoid code duplication.
+	SERVER_FlagsetChanged( self );
 }
 
 // [TP] Added CVAR_SERVERINFO
@@ -812,6 +847,8 @@ CVAR (Flag, compat_fullweaponlower,		zacompatflags, ZACOMPATF_FULL_WEAPON_LOWER)
 CVAR (Flag, compat_autoaim,		zacompatflags, ZACOMPATF_AUTOAIM);
 CVAR (Flag, compat_silentwestspawns,	zacompatflags, ZACOMPATF_SILENT_WEST_SPAWNS);
 CVAR (Flag, compat_skulltagjumping,	zacompatflags, ZACOMPATF_SKULLTAG_JUMPING);
+CVAR (Flag, compat_resetglobalvarsonmapreset, zacompatflags, ZACOMPATF_RESET_GLOBALVARS_ON_MAPRESET);
+CVAR (Flag, compat_noobituaries, zacompatflags, ZACOMPATF_NO_OBITUARIES);
 
 //==========================================================================
 //
@@ -1036,22 +1073,10 @@ drawfullconsole:
 				POSSESSION_Render( );
 
 				// [BC] Render the scoreboard [BB] respecting free spectate mode.
-				if (( players[consoleplayer].camera != NULL ) && ( players[consoleplayer].camera->player != NULL ) && !CLIENTDEMO_IsInFreeSpectateMode())
-					SCOREBOARD_Render( players[consoleplayer].camera->player - players );
-				else
-					SCOREBOARD_Render( consoleplayer );
+				HUD_Render( CLIENTDEMO_IsInFreeSpectateMode( ) == false ? HUD_GetViewPlayer( ) : consoleplayer );
 
 				// Render any medals the player might have been awarded.
 				MEDAL_Render( );
-
-				// Render all medals the player currently has.
-				if ( Button_ShowMedals.bDown )
-				{
-					if (( players[consoleplayer].camera != NULL ) && ( players[consoleplayer].camera->player != NULL ))
-						MEDAL_RenderAllMedalsFullscreen( players[consoleplayer].camera->player ); // [CK] Fixed 'mo' to 'camera' (which was probably intended)
-					else
-						MEDAL_RenderAllMedalsFullscreen( &players[consoleplayer] );
-				}
 			}
 
 			// Render chat prompt.
@@ -1062,25 +1087,6 @@ drawfullconsole:
 			screen->SetBlendingRect(0,0,0,0);
 			hw2d = screen->Begin2D(false);
 			WI_Drawer ();
-
-			// Render all medals the player currently has.
-			if ( Button_ShowMedals.bDown )
-			{
-				if (( players[consoleplayer].camera != NULL ) && ( players[consoleplayer].camera->player != NULL ))
-					MEDAL_RenderAllMedalsFullscreen( players[consoleplayer].camera->player );
-				else
-					MEDAL_RenderAllMedalsFullscreen( &players[consoleplayer] );
-			}
-
-			// Allow people to see the full scoreboard in campaign mode.
-			if (( CAMPAIGN_InCampaign( )) && Button_ShowScores.bDown )
-			{
-				// Render the scoreboard.
-				if (( players[consoleplayer].camera != NULL ) && ( players[consoleplayer].camera->player != NULL ))
-					SCOREBOARD_RenderBoard( players[consoleplayer].camera->player - players );
-				else
-					SCOREBOARD_RenderBoard( consoleplayer );
-			}
 
 			// Render chat prompt.
 			CHAT_Render( );
@@ -1104,49 +1110,19 @@ drawfullconsole:
 	}
 	if ( NETWORK_InClientMode() )
 	{
+		FString message;
+
 		// Draw a "Waiting for server..." message if the server is lagging.
 		if ( CLIENT_GetServerLagging( ) == true )
-		{
-			USHORT				usTextColor;
-			char				szString[64];
-			DHUDMessageFadeOut	*pMsg;
-
-			// Build the string and text color;
-			sprintf( szString, "Waiting for server..." );
-			usTextColor = CR_GREEN;
-
-			pMsg = new DHUDMessageFadeOut( SmallFont, szString,
-				1.5f,
-				0.9f,
-				0,
-				0,
-				(EColorRange)usTextColor,
-				0.15f,
-				0.35f );
-
-			StatusBar->AttachMessage( pMsg, MAKE_ID('C','L','A','G') );
-		}
+			message = "Waiting for server...";
 		// Draw a "CONNECTION INTERRUPTED" message if the client is lagging.
 		else if ( CLIENT_GetClientLagging( ) == true )
+			message = "CONNECTION INTERRUPTED!";
+
+		if ( message.Len( ) > 0 )
 		{
-			USHORT				usTextColor;
-			char				szString[64];
-			DHUDMessageFadeOut	*pMsg;
-
-			// Build the string and text color;
-			sprintf( szString, "CONNECTION INTERRUPTED!" );
-			usTextColor = CR_GREEN;
-
-			pMsg = new DHUDMessageFadeOut( SmallFont, szString,
-				1.5f,
-				0.9f,
-				0,
-				0,
-				(EColorRange)usTextColor,
-				0.15f,
-				0.35f );
-
-			StatusBar->AttachMessage( pMsg, MAKE_ID('C','L','A','G') );
+			DHUDMessageFadeOut *pMsg = new DHUDMessageFadeOut( SmallFont, message, 1.5f, 0.9f, 0, 0, CR_GREEN, 0.15f, 0.35f );
+			StatusBar->AttachMessage( pMsg, MAKE_ID( 'C', 'L', 'A', 'G' ));
 		}
 	}
 
@@ -1333,7 +1309,11 @@ void D_DoomLoop ()
 					S_UpdateSounds( players[consoleplayer].camera );
 
 				// Update display, next frame, with current state.
-				I_StartTic( );
+				// [AK] Don't call I_StartTic() if we're currently using the old
+				// Skulltag mouse behaviour.
+				if ( cl_useskulltagmouse == false )
+					I_StartTic( );
+
 				D_Display( );
 				break;
 			case NETSTATE_SERVER:
@@ -1805,8 +1785,14 @@ void ParseCVarInfo()
 			sc.MustGetToken(TK_Identifier);
 			if (FindCVar(sc.String, NULL) != NULL)
 			{
+				FBaseCVar *existingcvar = FindCVar(sc.String, NULL);
+				// [AK] Added a flag check so that existing "unknown" variables such as those originally
+				// created by ConsoleCommand can be replaced without throwing an error.
+				if (existingcvar->GetFlags() == (CVAR_ARCHIVE|CVAR_UNSETTABLE|CVAR_AUTO))
+					delete existingcvar;
 				// [BB] Extended error message.
-				sc.ScriptError("cvar '%s' already exists\n\nRemove '%s' and all other conflicting cvars from your ini and restart %s to continue.", sc.String, sc.String, GAMENAME);
+				else
+					sc.ScriptError("cvar '%s' already exists\n\nRemove '%s' and all other conflicting cvars from your ini and restart %s to continue.", sc.String, sc.String, GAMENAME);
 			}
 			cvarname = sc.String;
 			// A default value is optional and signalled by a '=' token.
@@ -2427,10 +2413,11 @@ static void D_DoomInit()
 
 	atterm (C_DeinitConsole);
 
-	gamestate = GS_STARTUP;
+	// [AK] When Zandronum closes, any open lump handles in ACS that mods
+	// forgot to close must be cleared before any resources are deleted.
+	atterm( ACS_ClearLumpHandles );
 
-	// Initialize the game mode module.
-	GAMEMODE_Construct( );
+	gamestate = GS_STARTUP;
 
 	// Determine if we're going to be a server, client, or local player.
 	if ( Args->CheckParm( "-host" ))
@@ -2521,6 +2508,23 @@ static void AddAutoloadFiles(const char *gamesection)
 			file += ".Autoload";
 			D_AddConfigWads(allwads, file);
 		}
+	}
+}
+
+//==========================================================================
+//
+// [TRSR] AddPostloadFiles
+//
+//==========================================================================
+
+static void AddPostloadFiles()
+{
+	if (!(gameinfo.flags & GI_SHAREWARE) && !Args->CheckParm("-nopostload"))
+	{
+		// [TRSR] Add any .wad or .pk3 files in the postload directory
+		// Under Unix looks into SHARE_DIR, progdir and HOME/.zdoom dir.
+		// Under Windows looks into progdir and HOME/.zdoom dir.
+		D_AddSubdirectory ( "postload" );
 	}
 }
 
@@ -2836,6 +2840,9 @@ void D_DoomMain (void)
 			exec->AddPullins(allwads);
 		}
 
+		// [TRSR] Add any files in postload directory
+		AddPostloadFiles();
+
 		// Since this function will never leave we must delete this array here manually.
 		pwads.Clear();
 		pwads.ShrinkToFit();
@@ -2881,9 +2888,6 @@ void D_DoomMain (void)
 		// Initialize the join queue module.
 		JOINQUEUE_Construct( );
 
-		// Initialize the medal info.
-		MEDAL_Construct( );
-
 		// Initialize the announcer info.
 		ANNOUNCER_Construct( );
 		ANNOUNCER_ParseAnnouncerInfo( );
@@ -2893,12 +2897,15 @@ void D_DoomMain (void)
 		CAMPAIGN_ParseCampaignInfo( );
 
 		// [BB] Parse the GAMEMODE lump.
-		GAMEMODE_ParseGamemodeInfo( );
+		GAMEMODE_ParseGameModeInfo( );
 
 		// [RH] Initialize localizable strings.
 		GStrings.LoadStrings (false);
 
 		V_InitFontColors ();
+
+		// [TP] Parse VOTEINFO lumps
+		CALLVOTE_ReadVoteInfo( );
 
 		// [RH] Moved these up here so that we can do most of our
 		//		startup output in a fullscreen console.
@@ -3033,6 +3040,9 @@ void D_DoomMain (void)
 		// [TP] Init preferred weapon order
 		PWO_Init();
 
+		// [AK] Initialize the medal definitions.
+		MEDAL_Construct( );
+
 		/* [BB] Zandronum uses different bot code.
 		//Added by MC:
 		bglobal.getspawned.Clear();
@@ -3065,6 +3075,9 @@ void D_DoomMain (void)
 		//SBarInfo support.
 		SBarInfo::Load();
 		HUD_InitHud();
+
+		// [AK] Parse any SCORINFO lumps.
+		SCOREBOARD_Construct( );
 
 		// [RH] User-configurable startup strings. Because BOOM does.
 		static const char *startupString[5] = {
@@ -3179,23 +3192,16 @@ void D_DoomMain (void)
 			}
 			if (gameaction != ga_loadgame && gameaction != ga_loadgamehidecon)
 			{
+				// [AK] Check if the map rotation can be used.
+				const bool useMapRotation = ((sv_maprotation) && (MAPROTATION_GetNumEntries() > 0));
+
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
 				{
 					G_NewInit( );
 
 					// Check if we have map rotation setup. If we do, use the first map there.
-					if (( sv_maprotation ) && ( MAPROTATION_GetNumEntries( ) > 0 ))
-					{
-						// [BB] G_InitNew seems to alter the contents of the first argument, which it shouldn't.
-						// This causes the "Frags" bug. The following is just a workaround, the behavior of
-						// G_InitNew should be fixed.
-						char levelname[10];
-						// [K6] Start with a random map if we are using sv_randommaprotation.
-						sprintf( levelname, "%s", MAPROTATION_GetMap( sv_randommaprotation ? M_Random.Random( ) % MAPROTATION_GetNumEntries( ) : 0 )->mapname );
-						MAPROTATION_SetPositionToMap( levelname );
-						G_InitNew( levelname, false );
-						//G_InitNew( MAPROTATION_GetMapName( 0 ), false );
-					}
+					if ( useMapRotation )
+						MAPROTATION_StartNewGame( );
 					else
 						G_InitNew( startmap, false );
 				}
@@ -3211,7 +3217,11 @@ void D_DoomMain (void)
 						CheckWarpTransMap (startmap, true);
 						if (demorecording)
 							G_BeginRecording (startmap);
-						G_InitNew (startmap, false);
+						// [AK] Use a map from the map rotation if it should be used.
+						if ((NETWORK_GetState() != NETSTATE_CLIENT) && (useMapRotation))
+							MAPROTATION_StartNewGame();
+						else
+							G_InitNew (startmap, false);
 					if (StoredWarp.IsNotEmpty())
 					{
 						AddCommandString(StoredWarp.LockBuffer());
@@ -3303,9 +3313,11 @@ void D_DoomMain (void)
 			new (&gameinfo) gameinfo_t;		// Reset gameinfo
 			S_Shutdown();					// free all channels and delete playlist
 			C_ClearAliases();				// CCMDs won't be reinitialized so these need to be deleted here
+			DestroyCVarsFlagged(CVAR_MOD);	// Delete any cvar left by mods
 
 			// [BB]
 			NETWORK_Destruct();
+			SCOREBOARD_Destruct();			// [AK] Clear everything from the scoreboard.
 
 			GC::FullGC();					// perform one final garbage collection before deleting the class data
 			PClass::ClearRuntimeData();		// clear all runtime generated class data
@@ -3321,8 +3333,12 @@ void D_DoomMain (void)
 //
 //==========================================================================
 
-CCMD(restart)
+UNSAFE_CCMD(restart)
 {
+	// [AK] This function may not be used by ConsoleCommand.
+	if ( ACS_IsCalledFromConsoleCommand( ))
+		return;
+
 	// remove command line args that would get in the way during restart
 	Args->RemoveArgs("-iwad");
 	Args->RemoveArgs("-deh");
@@ -3404,4 +3420,5 @@ void FStartupScreen::NetProgress(int) {}
 void FStartupScreen::NetMessage(char const *,...) {}
 void FStartupScreen::NetDone(void) {}
 bool FStartupScreen::NetLoop(bool (*)(void *),void *) { return false; }
+
 

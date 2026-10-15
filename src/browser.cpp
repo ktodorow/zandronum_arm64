@@ -102,11 +102,9 @@ void BROWSER_Construct( void )
 
 	// Setup our master server message buffer.
 	g_MasterServerBuffer.Init( MAX_UDP_PACKET, BUFFERTYPE_WRITE );
-	g_MasterServerBuffer.Clear();
 
 	// Setup our server message buffer.
 	g_ServerBuffer.Init( MAX_UDP_PACKET, BUFFERTYPE_WRITE );
-	g_ServerBuffer.Clear();
 
 	// Allow the user to specify which port the master server is on.
 	pszPort = Args->CheckValue( "-masterport" );
@@ -162,14 +160,7 @@ NETADDRESS_s BROWSER_GetAddress( ULONG ulServer )
 	if (( ulServer >= MAX_BROWSER_SERVERS ) || ( g_BrowserServerList[ulServer].ulActiveState != AS_ACTIVE ))
 	{
 		NETADDRESS_s	Dummy;
-
-		Dummy.abIP[0] = 0;
-		Dummy.abIP[1] = 0;
-		Dummy.abIP[2] = 0;
-		Dummy.abIP[3] = 0;
-		Dummy.usPort = 0;
-		Dummy.usPad = 0;
-
+		Dummy.Clear();
 		return ( Dummy );
 	}
 
@@ -233,7 +224,7 @@ LONG BROWSER_GetNumPWADs( ULONG ulServer )
 	if (( ulServer >= MAX_BROWSER_SERVERS ) || ( g_BrowserServerList[ulServer].ulActiveState != AS_ACTIVE ))
 		return ( false );
 
-	return ( g_BrowserServerList[ulServer].lNumPWADs );
+	return ( g_BrowserServerList[ulServer].PWADNames.Size( ));
 }
 
 //*****************************************************************************
@@ -241,6 +232,10 @@ LONG BROWSER_GetNumPWADs( ULONG ulServer )
 const char *BROWSER_GetPWADName( ULONG ulServer, ULONG ulWadIdx )
 {
 	if (( ulServer >= MAX_BROWSER_SERVERS ) || ( g_BrowserServerList[ulServer].ulActiveState != AS_ACTIVE ))
+		return ( " " );
+
+	// [SB] Also check the index is valid.
+	if ( ulWadIdx >= g_BrowserServerList[ulServer].PWADNames.Size())
 		return ( " " );
 
 	return ( g_BrowserServerList[ulServer].PWADNames[ulWadIdx].GetChars( ));
@@ -349,6 +344,34 @@ const char *BROWSER_GetVersion( ULONG ulServer )
 }
 
 //*****************************************************************************
+// [SB]
+const char *BROWSER_GetGameModeName( ULONG ulServer )
+{
+	if (( ulServer >= MAX_BROWSER_SERVERS ) || ( g_BrowserServerList[ulServer].ulActiveState != AS_ACTIVE ))
+		return ( " " );
+
+	// [SB] If the server didn't specify the name, use the name we know this mode by.
+	if ( g_BrowserServerList[ulServer].GameModeName.IsEmpty( ))
+		return ( GAMEMODE_GetName( g_BrowserServerList[ulServer].GameMode ));
+
+	return ( g_BrowserServerList[ulServer].GameModeName.GetChars( ));
+}
+
+//*****************************************************************************
+// [SB]
+const char *BROWSER_GetGameModeShortName( ULONG ulServer )
+{
+	if (( ulServer >= MAX_BROWSER_SERVERS ) || ( g_BrowserServerList[ulServer].ulActiveState != AS_ACTIVE ))
+		return ( " " );
+
+	// [SB] If the server didn't specify the name, use the name we know this mode by.
+	if ( g_BrowserServerList[ulServer].GameModeShortName.IsEmpty( ))
+		return ( GAMEMODE_GetShortName( g_BrowserServerList[ulServer].GameMode ));
+
+	return ( g_BrowserServerList[ulServer].GameModeShortName.GetChars( ));
+}
+
+//*****************************************************************************
 //*****************************************************************************
 //
 void BROWSER_ClearServerList( void )
@@ -359,11 +382,7 @@ void BROWSER_ClearServerList( void )
 	{
 		g_BrowserServerList[ulIdx].ulActiveState = AS_INACTIVE;
 
-		g_BrowserServerList[ulIdx].Address.abIP[0] = 0;
-		g_BrowserServerList[ulIdx].Address.abIP[1] = 0;
-		g_BrowserServerList[ulIdx].Address.abIP[2] = 0;
-		g_BrowserServerList[ulIdx].Address.abIP[3] = 0;
-		g_BrowserServerList[ulIdx].Address.usPort = 0;
+		g_BrowserServerList[ulIdx].Address.Clear();
 	}
 }
 
@@ -405,7 +424,7 @@ bool BROWSER_GetServerList( BYTESTREAM_s *pByteStream )
 
 	while ( true )
 	{
-		const LONG lCommand = NETWORK_ReadByte( pByteStream );
+		const LONG lCommand = pByteStream->ReadByte();
 
 		switch ( lCommand )
 		{
@@ -413,11 +432,7 @@ bool BROWSER_GetServerList( BYTESTREAM_s *pByteStream )
 			{
 				// Read in address information.
 				NETADDRESS_s serverAddress;
-				serverAddress.abIP[0] = NETWORK_ReadByte( pByteStream );
-				serverAddress.abIP[1] = NETWORK_ReadByte( pByteStream );
-				serverAddress.abIP[2] = NETWORK_ReadByte( pByteStream );
-				serverAddress.abIP[3] = NETWORK_ReadByte( pByteStream );
-				serverAddress.usPort = htons( NETWORK_ReadShort( pByteStream ));
+				serverAddress.ReadFromStream ( pByteStream );
 
 				BROWSER_AddServerToList ( serverAddress );
 			}
@@ -428,15 +443,12 @@ bool BROWSER_GetServerList( BYTESTREAM_s *pByteStream )
 				// Read in address information.
 				NETADDRESS_s serverAddress;
 				ULONG ulPorts = 0;
-				while (( ulPorts = NETWORK_ReadByte( pByteStream ) ))
+				while (( ulPorts = pByteStream->ReadByte() ))
 				{
-					serverAddress.abIP[0] = NETWORK_ReadByte( pByteStream );
-					serverAddress.abIP[1] = NETWORK_ReadByte( pByteStream );
-					serverAddress.abIP[2] = NETWORK_ReadByte( pByteStream );
-					serverAddress.abIP[3] = NETWORK_ReadByte( pByteStream );
+					serverAddress.ReadFromStream ( pByteStream, false );
 					for ( ULONG ulIdx = 0; ulIdx < ulPorts; ++ulIdx )
 					{
-						serverAddress.usPort = htons( NETWORK_ReadShort( pByteStream ));
+						serverAddress.usPort = htons( pByteStream->ReadShort());
 						BROWSER_AddServerToList ( serverAddress );
 					}
 				}
@@ -468,6 +480,7 @@ void BROWSER_ParseServerQuery( BYTESTREAM_s *pByteStream, bool bLAN )
 	ULONG		ulIdx;
 	LONG		lServer;
 	ULONG		ulFlags;
+	ULONG 		ulFlags2;
 	bool		bResortList = true;
 
 	lServer = browser_GetListIDByAddress( NETWORK_GetFromAddress( ));
@@ -487,7 +500,7 @@ void BROWSER_ParseServerQuery( BYTESTREAM_s *pByteStream, bool bLAN )
 	{
 		while ( 1 )
 		{
-			if ( NETWORK_ReadByte( pByteStream ) == -1 )
+			if ( pByteStream->ReadByte() == -1 )
 				return;
 		}
 	}
@@ -509,10 +522,10 @@ void BROWSER_ParseServerQuery( BYTESTREAM_s *pByteStream, bool bLAN )
 		g_BrowserServerList[lServer].lPing = I_MSTime( ) - g_BrowserServerList[lServer].lMSTime;
 
 	// Read in the time we sent to the server.
-	NETWORK_ReadLong( pByteStream );
+	pByteStream->ReadLong();
 
 	// Read in the version.
-	g_BrowserServerList[lServer].Version = NETWORK_ReadString( pByteStream );
+	g_BrowserServerList[lServer].Version = pByteStream->ReadString();
 
 	// If the version doesn't match ours, remove it from the list.
 	{
@@ -527,129 +540,130 @@ void BROWSER_ParseServerQuery( BYTESTREAM_s *pByteStream, bool bLAN )
 			g_BrowserServerList[lServer].ulActiveState = AS_INACTIVE;
 			while ( 1 )
 			{
-				if ( NETWORK_ReadByte( pByteStream ) == -1 )
+				if ( pByteStream->ReadByte() == -1 )
 					return;
 			}
 		}
 	}
 
 	// Read in the data that will be sent to us.
-	ulFlags = NETWORK_ReadLong( pByteStream );
+	ulFlags = pByteStream->ReadLong();
 
 	// Read the server name.
 	if ( ulFlags & SQF_NAME )
-		g_BrowserServerList[lServer].HostName = NETWORK_ReadString( pByteStream );
+		g_BrowserServerList[lServer].HostName = pByteStream->ReadString();
 
 	// Read the website URL.
 	if ( ulFlags & SQF_URL )
-		g_BrowserServerList[lServer].WadURL = NETWORK_ReadString( pByteStream );
+		g_BrowserServerList[lServer].WadURL = pByteStream->ReadString();
 
 	// Read the host's e-mail address.
 	if ( ulFlags & SQF_EMAIL )
-		g_BrowserServerList[lServer].EmailAddress = NETWORK_ReadString( pByteStream );
+		g_BrowserServerList[lServer].EmailAddress = pByteStream->ReadString();
 
 	if ( ulFlags & SQF_MAPNAME )
-		g_BrowserServerList[lServer].Mapname = NETWORK_ReadString( pByteStream );
+		g_BrowserServerList[lServer].Mapname = pByteStream->ReadString();
 	if ( ulFlags & SQF_MAXCLIENTS )
-		g_BrowserServerList[lServer].lMaxClients = NETWORK_ReadByte( pByteStream );
+		g_BrowserServerList[lServer].lMaxClients = pByteStream->ReadByte();
 
 	// Maximum slots.
 	if ( ulFlags & SQF_MAXPLAYERS )
-		NETWORK_ReadByte( pByteStream );
+		pByteStream->ReadByte();
 
 	// Read in the PWAD information.
 	if ( ulFlags & SQF_PWADS )
 	{
-		g_BrowserServerList[lServer].lNumPWADs = NETWORK_ReadByte( pByteStream );
-		if ( g_BrowserServerList[lServer].lNumPWADs > 0 )
+		ULONG ulNumPWADs = static_cast<ULONG>( pByteStream->ReadByte() );
+		if ( ulNumPWADs > 0 )
 		{
-			for ( ulIdx = 0; ulIdx < (ULONG)g_BrowserServerList[lServer].lNumPWADs; ulIdx++ )
-				g_BrowserServerList[lServer].PWADNames[ulIdx] = NETWORK_ReadString( pByteStream );
+			g_BrowserServerList[lServer].PWADNames.Resize( ulNumPWADs );
+			for ( ulIdx = 0; ulIdx < ulNumPWADs; ulIdx++ )
+				g_BrowserServerList[lServer].PWADNames[ulIdx] = pByteStream->ReadString();
 		}
 	}
 
 	if ( ulFlags & SQF_GAMETYPE )
 	{
-		g_BrowserServerList[lServer].GameMode = (GAMEMODE_e)NETWORK_ReadByte( pByteStream );
-		NETWORK_ReadByte( pByteStream );
-		NETWORK_ReadByte( pByteStream );
+		g_BrowserServerList[lServer].GameMode = (GAMEMODE_e)pByteStream->ReadByte();
+		pByteStream->ReadByte();
+		pByteStream->ReadByte();
 	}
 
 	// Game name.
 	if ( ulFlags & SQF_GAMENAME )
-		NETWORK_ReadString( pByteStream );
+		pByteStream->ReadString();
 
 	// Read in the IWAD name.
 	if ( ulFlags & SQF_IWAD )
-		g_BrowserServerList[lServer].IWADName = NETWORK_ReadString( pByteStream );
+		g_BrowserServerList[lServer].IWADName = pByteStream->ReadString();
 
 	// Force password.
 	if ( ulFlags & SQF_FORCEPASSWORD )
-		NETWORK_ReadByte( pByteStream );
+		pByteStream->ReadByte();
 
 	// Force join password.
 	if ( ulFlags & SQF_FORCEJOINPASSWORD )
-		NETWORK_ReadByte( pByteStream );
+		pByteStream->ReadByte();
 
 	// Game skill.
 	if ( ulFlags & SQF_GAMESKILL )
-		NETWORK_ReadByte( pByteStream );
+		pByteStream->ReadByte();
 
 	// Bot skill.
 	if ( ulFlags & SQF_BOTSKILL )
-		NETWORK_ReadByte( pByteStream );
+		pByteStream->ReadByte();
 
 	if ( ulFlags & SQF_DMFLAGS )
 	{
 		// DMFlags.
-		NETWORK_ReadLong( pByteStream );
+		pByteStream->ReadLong();
 
 		// DMFlags2.
-		NETWORK_ReadLong( pByteStream );
+		pByteStream->ReadLong();
 
 		// Compatflags.
-		NETWORK_ReadLong( pByteStream );
+		pByteStream->ReadLong();
 	}
 
 	if ( ulFlags & SQF_LIMITS )
 	{
 		// Fraglimit.
-		NETWORK_ReadShort( pByteStream );
+		pByteStream->ReadShort();
 
 		// Timelimit.
-		if ( NETWORK_ReadShort( pByteStream ))
+		if ( pByteStream->ReadShort())
 		{
 			// Time left.
-			NETWORK_ReadShort( pByteStream );
+			pByteStream->ReadShort();
 		}
 
 		// Duellimit.
-		NETWORK_ReadShort( pByteStream );
+		pByteStream->ReadShort();
 
 		// Pointlimit.
-		NETWORK_ReadShort( pByteStream );
+		pByteStream->ReadShort();
 
 		// Winlimit.
-		NETWORK_ReadShort( pByteStream );
+		pByteStream->ReadShort();
 	}
 
 	// Team damage scale.
 	if ( ulFlags & SQF_TEAMDAMAGE )
-		NETWORK_ReadFloat( pByteStream );
+		pByteStream->ReadFloat();
 
 	// [CW] Deprecated!
 	if ( ulFlags & SQF_TEAMSCORES )
 	{
 		// Blue score.
-		NETWORK_ReadShort( pByteStream );
+		pByteStream->ReadShort();
 
 		// Red score.
-		NETWORK_ReadShort( pByteStream );
+		pByteStream->ReadShort();
 	}
 
 	// Read in the number of players.
 	if ( ulFlags & SQF_NUMPLAYERS )
-		g_BrowserServerList[lServer].lNumPlayers = NETWORK_ReadByte( pByteStream );
+		g_BrowserServerList[lServer].lNumPlayers = pByteStream->ReadByte();
 
 	if ( ulFlags & SQF_PLAYERDATA )
 	{
@@ -658,28 +672,28 @@ void BROWSER_ParseServerQuery( BYTESTREAM_s *pByteStream, bool bLAN )
 			for ( ulIdx = 0; ulIdx < (ULONG)g_BrowserServerList[lServer].lNumPlayers; ulIdx++ )
 			{
 				// Read in this player's name.
-				g_BrowserServerList[lServer].Players[ulIdx].Name = NETWORK_ReadString( pByteStream );
+				g_BrowserServerList[lServer].Players[ulIdx].Name = pByteStream->ReadString();
 
 				// Read in "fragcount" (could be frags, points, etc.)
-				g_BrowserServerList[lServer].Players[ulIdx].lFragcount = NETWORK_ReadShort( pByteStream );
+				g_BrowserServerList[lServer].Players[ulIdx].lFragcount = pByteStream->ReadShort();
 
 				// Read in the player's ping.
-				g_BrowserServerList[lServer].Players[ulIdx].lPing = NETWORK_ReadShort( pByteStream );
+				g_BrowserServerList[lServer].Players[ulIdx].lPing = pByteStream->ReadShort();
 
 				// Read in whether or not the player is spectating.
-				g_BrowserServerList[lServer].Players[ulIdx].bSpectating = !!NETWORK_ReadByte( pByteStream );
+				g_BrowserServerList[lServer].Players[ulIdx].bSpectating = !!pByteStream->ReadByte();
 
 				// Read in whether or not the player is a bot.
-				g_BrowserServerList[lServer].Players[ulIdx].bIsBot = !!NETWORK_ReadByte( pByteStream );
+				g_BrowserServerList[lServer].Players[ulIdx].bIsBot = !!pByteStream->ReadByte();
 
 				if ( GAMEMODE_GetFlags( g_BrowserServerList[lServer].GameMode ) & GMF_PLAYERSONTEAMS )
 				{
 					// Team.
-					NETWORK_ReadByte( pByteStream );
+					pByteStream->ReadByte();
 				}
 
 				// Time.
-				NETWORK_ReadByte( pByteStream );
+				pByteStream->ReadByte();
 			}
 		}
 	}
@@ -687,64 +701,95 @@ void BROWSER_ParseServerQuery( BYTESTREAM_s *pByteStream, bool bLAN )
 	// [CW] Read in the number of the teams.
 	// [BB] Make sure that the number is valid!
 	if ( ulFlags & SQF_TEAMINFO_NUMBER )
-		g_ulNumberOfTeams = clamp ( NETWORK_ReadByte( pByteStream ), 2, MAX_TEAMS );
+		g_ulNumberOfTeams = clamp ( pByteStream->ReadByte(), 2, MAX_TEAMS );
 
 	// [CW] Read in the name of the teams.
 	if ( ulFlags & SQF_TEAMINFO_NAME )
 	{
 		for ( ULONG ulIdx = 0; ulIdx < g_ulNumberOfTeams; ulIdx++ )
-			NETWORK_ReadString( pByteStream );
+			pByteStream->ReadString();
 	}
 
 	// [CW] Read in the color of the teams.
 	if ( ulFlags & SQF_TEAMINFO_COLOR )
 	{
 		for ( ULONG ulIdx = 0; ulIdx < g_ulNumberOfTeams; ulIdx++ )
-			NETWORK_ReadLong( pByteStream );
+			pByteStream->ReadLong();
 	}
 
 	// [CW] Read in the score of the teams.
 	if ( ulFlags & SQF_TEAMINFO_SCORE )
 	{
 		for ( ULONG ulIdx = 0; ulIdx < g_ulNumberOfTeams; ulIdx++ )
-			NETWORK_ReadShort( pByteStream );
+			pByteStream->ReadShort();
 	}
 
 	// [BB] Testing server and what's the binary name?
 	if ( ulFlags & SQF_TESTING_SERVER )
 	{
-		NETWORK_ReadByte( pByteStream );
-		NETWORK_ReadString( pByteStream );
+		pByteStream->ReadByte();
+		pByteStream->ReadString();
 	}
 
 	// [BB] MD5 sum of the main data file (skulltag.wad / skulltag_data.pk3).
 	if ( ulFlags & SQF_DATA_MD5SUM )
-		NETWORK_ReadString( pByteStream );
+		pByteStream->ReadString();
 
 	// [BB] All dmflags and compatflags.
 	if ( ulFlags & SQF_ALL_DMFLAGS )
 	{
-		const ULONG ulNumFlags = NETWORK_ReadByte( pByteStream );
+		const ULONG ulNumFlags = pByteStream->ReadByte();
 		for ( ULONG ulIdx = 0; ulIdx < ulNumFlags; ulIdx++ )
-			NETWORK_ReadLong( pByteStream );
+			pByteStream->ReadLong();
 	}
 
 	// [BB] Get special security settings like sv_enforcemasterbanlist.
 	if ( ulFlags & SQF_SECURITY_SETTINGS )
-		NETWORK_ReadByte( pByteStream );
+		pByteStream->ReadByte();
 
 	// [TP] Optional wads
 	if ( ulFlags & SQF_OPTIONAL_WADS )
 	{
-		for ( int i = NETWORK_ReadByte( pByteStream ); i > 0; --i )
-			NETWORK_ReadByte( pByteStream );
+		for ( int i = pByteStream->ReadByte(); i > 0; --i )
+			pByteStream->ReadByte();
 	}
 
 	// [TP] Dehacked patches
 	if ( ulFlags & SQF_DEH )
 	{
-		for ( int i = NETWORK_ReadByte( pByteStream ); i > 0; --i )
-			NETWORK_ReadString( pByteStream );
+		for ( int i = pByteStream->ReadByte(); i > 0; --i )
+			pByteStream->ReadString();
+	}
+
+	// [SB] Extended server info
+	if ( ulFlags & SQF_EXTENDED_INFO )
+	{
+		ulFlags2 = pByteStream->ReadLong();
+
+		// [SB] PWAD hashes
+		if ( ulFlags2 & SQF2_PWAD_HASHES )
+		{
+			for ( int i = pByteStream->ReadByte(); i > 0; --i )
+				pByteStream->ReadString();
+		}
+
+		// [SB] Server country code
+		if ( ulFlags2 & SQF2_COUNTRY )
+		{
+			char code[3];
+			pByteStream->ReadBuffer( code, 3 );
+		}
+
+		// [SB] Game mode names
+		if ( ulFlags2 & SQF2_GAMEMODE_NAME )
+		{
+			g_BrowserServerList[lServer].GameModeName = pByteStream->ReadString();
+		}
+
+		if ( ulFlags2 & SQF2_GAMEMODE_SHORTNAME )
+		{
+			g_BrowserServerList[lServer].GameModeShortName = pByteStream->ReadString();
+		}
 	}
 
 	// Now that this server has been read in, resort the servers in the menu.
@@ -765,8 +810,8 @@ void BROWSER_QueryMasterServer( void )
 
 	// Clear out the buffer, and write out launcher challenge.
 	g_MasterServerBuffer.Clear();
-	NETWORK_WriteLong( &g_MasterServerBuffer.ByteStream, LAUNCHER_MASTER_CHALLENGE );
-	NETWORK_WriteShort( &g_MasterServerBuffer.ByteStream, MASTER_SERVER_VERSION );
+	g_MasterServerBuffer.ByteStream.WriteLong( LAUNCHER_MASTER_CHALLENGE );
+	g_MasterServerBuffer.ByteStream.WriteShort( MASTER_SERVER_VERSION );
 
 	// Send the master server our packet.
 //	NETWORK_LaunchPacket( &g_MasterServerBuffer, g_AddressMasterServer, true );
@@ -853,10 +898,12 @@ static void browser_QueryServer( ULONG ulServer )
 	}
 
 	// Clear out the buffer, and write out launcher challenge.
+	// [SB] Added extended flags that we want.
 	g_ServerBuffer.Clear();
-	NETWORK_WriteLong( &g_ServerBuffer.ByteStream, LAUNCHER_SERVER_CHALLENGE );
-	NETWORK_WriteLong( &g_ServerBuffer.ByteStream, SQF_NAME|SQF_URL|SQF_EMAIL|SQF_MAPNAME|SQF_MAXCLIENTS|SQF_PWADS|SQF_GAMETYPE|SQF_IWAD|SQF_NUMPLAYERS|SQF_PLAYERDATA );
-	NETWORK_WriteLong( &g_ServerBuffer.ByteStream, I_MSTime( ));
+	g_ServerBuffer.ByteStream.WriteLong( LAUNCHER_SERVER_CHALLENGE );
+	g_ServerBuffer.ByteStream.WriteLong( SQF_NAME|SQF_URL|SQF_EMAIL|SQF_MAPNAME|SQF_MAXCLIENTS|SQF_PWADS|SQF_GAMETYPE|SQF_IWAD|SQF_NUMPLAYERS|SQF_PLAYERDATA|SQF_EXTENDED_INFO );
+	g_ServerBuffer.ByteStream.WriteLong( I_MSTime( ));
+	g_ServerBuffer.ByteStream.WriteLong( SQF2_GAMEMODE_NAME|SQF2_GAMEMODE_SHORTNAME );
 
 	// Send the server our packet.
 	NETWORK_LaunchPacket( &g_ServerBuffer, g_BrowserServerList[ulServer].Address );
@@ -883,8 +930,8 @@ CCMD( dumpserverlist )
 		Printf( "\nServer #%d\n----------------\n", static_cast<unsigned int> (ulIdx) );
 		Printf( "Name: %s\n", g_BrowserServerList[ulIdx].HostName.GetChars() );
 		Printf( "Address: %s\n", g_BrowserServerList[ulIdx].Address.ToString() );
-		Printf( "Gametype: %d\n", g_BrowserServerList[ulIdx].GameMode );
-		Printf( "Num PWADs: %d\n", static_cast<int> (g_BrowserServerList[ulIdx].lNumPWADs) );
+		Printf( "Gametype: %d (%s)\n", g_BrowserServerList[ulIdx].GameMode, BROWSER_GetGameModeName(ulIdx) );
+		Printf( "Num PWADs: %d\n", static_cast<int> (g_BrowserServerList[ulIdx].PWADNames.Size()) );
 		Printf( "Players: %d/%d\n", static_cast<int> (g_BrowserServerList[ulIdx].lNumPlayers), static_cast<int> (g_BrowserServerList[ulIdx].lMaxClients) );
 		Printf( "Ping: %d\n", static_cast<int> (g_BrowserServerList[ulIdx].lPing) );
 	}

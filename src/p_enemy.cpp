@@ -1087,7 +1087,7 @@ void P_RandomChaseDir (AActor *actor)
 			if ( ( NETWORK_GetState( ) == NETSTATE_SINGLE )
 				// [BB] On the server it's possible that there are no players. In this case the
 				// for loop below would get stuck, so we may not enter it.
-				|| ( ( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( SERVER_CalcNumPlayers() == 0 ) ) )
+				|| ( ( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( SERVER_CountPlayers( true ) == 0 ) ) )
 			{
 				i = 0;
 			}
@@ -1294,7 +1294,7 @@ bool P_IsVisible(AActor *lookee, AActor *other, INTBOOL allaround, FLookExParams
 	{
 		maxdist = params->maxdist;
 		mindist = params->mindist;
-		fov = params->fov;
+		fov = allaround ? 0 : params->fov; // [RK] Account for LOOKALLAROUND flag.
 	}
 	else
 	{
@@ -2224,7 +2224,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_LookEx)
 
 	if (!(flags & LOF_NOSIGHTCHECK))
 	{
-		if (!P_LookForPlayers(self, true, &params))
+		if (!P_LookForPlayers(self, (self->flags4 & MF4_LOOKALLAROUND), &params)) // [RK] Passing true for allround should only occur if the flag is actually set.
 			return;
 	}
 	else
@@ -2539,7 +2539,7 @@ void A_DoChase (AActor *actor, bool fastchase, FState *meleestate, FState *missi
 			if ( ( NETWORK_GetState( ) == NETSTATE_SINGLE )
 				// [BB] On the server it's possible that there are no players. In this case the
 				// for loop below would get stuck, so we may not enter it.
-				|| ( ( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( SERVER_CalcNumPlayers() == 0 ) ) )
+				|| ( ( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( SERVER_CountPlayers( true ) == 0 ) ) )
 			{
 				i = 0;
 			}
@@ -3345,10 +3345,20 @@ DEFINE_ACTION_FUNCTION(AActor, A_Scream)
 
 DEFINE_ACTION_FUNCTION(AActor, A_XScream)
 {
+	// [AK] If the actor used have a valid player pointer, but doesn't anymore
+	// because the player respawned, then temporarily set the pointer to the
+	// old player. This way, we can still play their skin's gibbed sound.
+	const bool usedOldPlayer = G_TransferPlayerFromCorpse(self);
+
 	if (self->player)
 		S_Sound (self, CHAN_VOICE, "*gibbed", 1, ATTN_NORM);
 	else
 		S_Sound (self, CHAN_VOICE, "misc/gibbed", 1, ATTN_NORM);
+
+	// [AK] After playing the gibbed sound, if self->player was a null pointer
+	// before and had to be changed temporarily, reset it back.
+	if (usedOldPlayer)
+		self->player = nullptr;
 }
 
 //===========================================================================
@@ -3557,7 +3567,8 @@ void P_TossItem (AActor *item)
 DEFINE_ACTION_FUNCTION(AActor, A_Pain)
 {
 	// [RH] Vary player pain sounds depending on health (ala Quake2)
-	if (self->player && self->player->morphTics == 0)
+	// [RK] Play the pain sound if player has NOMORPHLIMITATIONS set.
+	if ( self->player && ( self->player->morphTics == 0 || ( self->player->mo->PlayerFlags & PPF_NOMORPHLIMITATIONS )))
 	{
 		const char *pain_amount;
 		FSoundID sfx_id;
@@ -3633,13 +3644,7 @@ DEFINE_ACTION_FUNCTION(AActor, A_Detonate)
 
 	// [BC] If this explosion originated from a player, and it hit something, give the player
 	// credit for it.
-	if (( self->target ) && ( self->target->player ))
-	{
-		if ( self->target->player->bStruckPlayer )
-			PLAYER_StruckPlayer( self->target->player );
-		else
-			self->target->player->ulConsecutiveHits = 0;
-	}
+	PLAYER_CheckStruckPlayer ( self->target );
 }
 
 bool CheckBossDeath (AActor *actor)
@@ -3664,7 +3669,7 @@ bool CheckBossDeath (AActor *actor)
 			(other->health > 0 || (other->flags & MF_ICECORPSE))
 			&& other->GetClass() == actor->GetClass()
 			// [BB] Don't count actors hidden by HideOrDestroyIfSafe()
-			&& !( other->ulSTFlags & STFL_HIDDEN_INSTEAD_OF_DESTROYED ) )
+			&& !( other->STFlags & STFL_HIDDEN_INSTEAD_OF_DESTROYED ) )
 		{ // Found a living boss
 		  // [RH] Frozen bosses don't count as dead until they shatter
 			return false;

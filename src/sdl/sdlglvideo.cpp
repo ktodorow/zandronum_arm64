@@ -79,7 +79,6 @@ static MiniModeInfo WinModes[] =
 	{ 720, 480 },	// 16:10
 	{ 720, 540 },
 	{ 800, 450 },	// 16:9
-	{ 800, 480 },
 	{ 800, 500 },	// 16:10
 	{ 800, 600 },
 	{ 848, 480 },	// 16:9
@@ -290,11 +289,7 @@ bool SDLGLVideo::SetupPixelFormat(bool allowsoftware, int multisample)
 	SDL_GL_SetAttribute( SDL_GL_GREEN_SIZE,  8 );
 	SDL_GL_SetAttribute( SDL_GL_BLUE_SIZE,  8 );
 	SDL_GL_SetAttribute( SDL_GL_ALPHA_SIZE,  8 );
-#ifdef PANDORA
-	SDL_GL_SetAttribute( SDL_GL_DEPTH_SIZE,  16 );
-#else
 	SDL_GL_SetAttribute( SDL_GL_DEPTH_SIZE,  24 );
-#endif
 	SDL_GL_SetAttribute( SDL_GL_STENCIL_SIZE,  8 );
 //		SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER,  1 );
 	if (multisample > 0) {

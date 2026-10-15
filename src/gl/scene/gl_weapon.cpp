@@ -61,6 +61,7 @@ EXTERN_CVAR (Bool, r_drawplayersprites)
 EXTERN_CVAR(Float, transsouls)
 EXTERN_CVAR (Bool, st_scale)
 EXTERN_CVAR(Int, gl_fuzztype)
+EXTERN_CVAR (Bool, r_deathcamera)
 
 
 //==========================================================================
@@ -189,7 +190,10 @@ void FGLRenderer::DrawPlayerSprites(sector_t * viewsector, bool hudModelStep)
 	if (!player ||
 		!r_drawplayersprites ||
 		!camera->player ||
-		(players[consoleplayer].cheats & CF_CHASECAM))
+		// [EP] similarly to the change in the software renderer, weapon display
+		// for the chasecam case must be checked only for the console player.
+		(/*player->*/players[consoleplayer].cheats & CF_CHASECAM) || 
+		(r_deathcamera && camera->health <= 0))
 		return;
 
 	/*

@@ -43,6 +43,7 @@
 
 // [Leo] Zandronum includes
 #include "v_text.h"
+#include "sv_main.h"
 
 static AActor *RoughBlockCheck (AActor *mo, int index, void *);
 
@@ -607,7 +608,11 @@ void AActor::SetOrigin (fixed_t ix, fixed_t iy, fixed_t iz)
 	P_FindFloorCeiling(this, FFCF_ONLYSPAWNPOS);
 
 	// [BC] Flag this actor as having moved.
-	ulSTFlags |= STFL_POSITIONCHANGED;
+	STFlags |= STFL_POSITIONCHANGED;
+
+	// [AK] If the actor is a player being extrapolated, don't allow a backtrace to be performed.
+	if (( player ) && ( SERVER_IsExtrapolatingPlayer( player - players )))
+		SERVER_GetClient( player - players )->OldData->bTeleported = true;
 }
 
 FBlockNode *FBlockNode::FreeBlocks = NULL;

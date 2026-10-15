@@ -70,7 +70,7 @@ DPillar::DPillar(sector_t *sector)
 	m_Interp_Floor = sector->SetInterpolation(sector_t::FloorMove, true);
 	m_Interp_Ceiling = sector->SetInterpolation(sector_t::CeilingMove, true);
 	// [EP]
-	m_lPillarID = -1;
+	m_PillarID = -1;
 }
 
 void DPillar::Destroy()
@@ -101,25 +101,25 @@ void DPillar::Serialize (FArchive &arc)
 		<< m_Interp_Floor
 		<< m_Interp_Ceiling
 		// [BC]
-		<< m_lPillarID;
+		<< m_PillarID;
 }
 
 // [BC]
 void DPillar::UpdateToClient( ULONG ulClient )
 {
-	SERVERCOMMANDS_DoPillar( m_Type, m_Sector, m_FloorSpeed, m_CeilingSpeed, m_FloorTarget, m_CeilingTarget, m_Crush, m_Hexencrush, m_lPillarID, ulClient, SVCF_ONLYTHISCLIENT );
+	SERVERCOMMANDS_DoPillar( m_Type, m_Sector, m_FloorSpeed, m_CeilingSpeed, m_FloorTarget, m_CeilingTarget, m_Crush, m_Hexencrush, m_PillarID, ulClient, SVCF_ONLYTHISCLIENT );
 }
 
 // [BC]
 LONG DPillar::GetID( void )
 {
-	return ( m_lPillarID );
+	return ( m_PillarID );
 }
 
 // [BC]
 void DPillar::SetID( LONG lID )
 {
-	m_lPillarID = lID;
+	m_PillarID = lID;
 }
 
 // [BC]
@@ -228,7 +228,7 @@ void DPillar::Tick ()
 		if ( NETWORK_GetState( ) == NETSTATE_SERVER )
 		{
 			SERVERCOMMANDS_StopSectorSequence( m_Sector );
-			SERVERCOMMANDS_DestroyPillar( m_lPillarID );
+			SERVERCOMMANDS_DestroyPillar( m_PillarID );
 
 			// Also, since this sector has reached its destination, verify that all the clients
 			// have the correct floor/ceiling height for this sector.
@@ -236,8 +236,12 @@ void DPillar::Tick ()
 			SERVERCOMMANDS_SetSectorCeilingPlane( ULONG( m_Sector - sectors ));
 		}
 
-		SN_StopSequence (m_Sector, CHAN_FLOOR);
-		Destroy ();
+		// [RK] Destroy the pillar on the server/host end.
+		if ( NETWORK_InClientMode () == false )
+		{
+			SN_StopSequence(m_Sector, CHAN_FLOOR);
+			Destroy();
+		}
 	}
 	else
 	{
@@ -267,7 +271,7 @@ DPillar::DPillar (sector_t *sector, EPillar type, fixed_t speed,
 	m_Crush = crush;
 	m_Hexencrush = hexencrush;
 	// [EP]
-	m_lPillarID = -1;
+	m_PillarID = -1;
 
 	if (type == pillarBuild)
 	{
@@ -375,7 +379,7 @@ bool EV_DoPillar (DPillar::EPillar type, int tag, fixed_t speed, fixed_t height,
 		if ( pPillar )
 		{
 			// [BC] Assign the mover's network ID. However, don't do this on the client end.
-			if ( NETWORK_InClientMode() == false )
+			if ( NETWORK_GetState() == NETSTATE_SERVER )
 				pPillar->SetID ( P_GetFirstFreePillarID( ) );
 
 			// [BC] If we're the server, tell clients to create the pillar.
@@ -407,27 +411,5 @@ DPillar *P_GetPillarByID( LONG lID )
 //
 LONG P_GetFirstFreePillarID( void )
 {
-	LONG		lIdx;
-	DPillar		*pPillar;
-	bool		bIDIsAvailable;
-
-	for ( lIdx = 0; lIdx < 8192; lIdx++ )
-	{
-		TThinkerIterator<DPillar>		Iterator;
-
-		bIDIsAvailable = true;
-		while (( pPillar = Iterator.Next( )))
-		{
-			if ( pPillar->GetID( ) == lIdx )
-			{
-				bIDIsAvailable = false;
-				break;
-			}
-		}
-
-		if ( bIDIsAvailable )
-			return ( lIdx );
-	}
-
-	return ( -1 );
+	return NETWORK_GetFirstFreeID<DPillar>();
 }

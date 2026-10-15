@@ -128,8 +128,6 @@ CVAR( String, authhostname, "auth.zandronum.com:16666", CVAR_ARCHIVE|CVAR_GLOBAL
 void NETWORK_AUTH_Construct( void )
 {
 	g_AuthServerBuffer.Init( MAX_UDP_PACKET, BUFFERTYPE_WRITE );
-	g_AuthServerBuffer.Clear();
-
 	g_AuthServerAddressCached = false;
 
 	atterm( NETWORK_AUTH_Destruct );
@@ -240,10 +238,10 @@ void SERVER_InitClientSRPData ( const ULONG ulClient )
 void SERVER_AUTH_Negotiate ( const char *Username, const unsigned int ClientSessionID )
 {
 	g_AuthServerBuffer.Clear();
-	NETWORK_WriteLong( &g_AuthServerBuffer.ByteStream, SERVER_AUTH_NEGOTIATE );
-	NETWORK_WriteByte( &g_AuthServerBuffer.ByteStream, AUTH_PROTOCOL_VERSION );
-	NETWORK_WriteLong( &g_AuthServerBuffer.ByteStream, ClientSessionID);
-	NETWORK_WriteString( &g_AuthServerBuffer.ByteStream, Username );
+	g_AuthServerBuffer.ByteStream.WriteLong( SERVER_AUTH_NEGOTIATE );
+	g_AuthServerBuffer.ByteStream.WriteByte( AUTH_PROTOCOL_VERSION );
+	g_AuthServerBuffer.ByteStream.WriteLong( ClientSessionID);
+	g_AuthServerBuffer.ByteStream.WriteString( Username );
 	NETWORK_LaunchPacket( &g_AuthServerBuffer, g_AuthServerAddress );
 }
 
@@ -252,11 +250,11 @@ void SERVER_AUTH_Negotiate ( const char *Username, const unsigned int ClientSess
 void SERVER_AUTH_SRPMessage ( const int MagicNumber, const int SessionID, const TArray<unsigned char> &Bytes )
 {
 	g_AuthServerBuffer.Clear();
-	NETWORK_WriteLong( &g_AuthServerBuffer.ByteStream, MagicNumber );
-	NETWORK_WriteLong( &g_AuthServerBuffer.ByteStream, SessionID );
-	NETWORK_WriteShort( &g_AuthServerBuffer.ByteStream, Bytes.Size() );
+	g_AuthServerBuffer.ByteStream.WriteLong( MagicNumber );
+	g_AuthServerBuffer.ByteStream.WriteLong( SessionID );
+	g_AuthServerBuffer.ByteStream.WriteShort( Bytes.Size() );
 	for ( unsigned int i = 0; i < Bytes.Size(); ++i )
-		NETWORK_WriteByte( &g_AuthServerBuffer.ByteStream, Bytes[i] );
+		g_AuthServerBuffer.ByteStream.WriteByte( Bytes[i] );
 	NETWORK_LaunchPacket( &g_AuthServerBuffer, g_AuthServerAddress );
 }
 
@@ -266,29 +264,29 @@ void SERVER_AUTH_ParsePacket( BYTESTREAM_s *pByteStream )
 {
 	while ( 1 )	 
 	{  
-		const unsigned int commandNum = NETWORK_ReadLong( pByteStream );
+		const unsigned int commandNum = pByteStream->ReadLong();
 
-		if ( commandNum == -1u )
+		if ( commandNum == UINT_MAX )
 			break;
 
 		switch ( commandNum )
 		{
 		case AUTH_SERVER_NEGOTIATE:
 			{
-				const int protovolVersion = NETWORK_ReadByte( pByteStream );
-				const unsigned int clientSessionID = NETWORK_ReadLong( pByteStream );
-				const int sessionID = NETWORK_ReadLong( pByteStream );
-				const int lenSalt = NETWORK_ReadByte( pByteStream );
+				const int protovolVersion = pByteStream->ReadByte();
+				const unsigned int clientSessionID = pByteStream->ReadLong();
+				const int sessionID = pByteStream->ReadLong();
+				const int lenSalt = pByteStream->ReadByte();
 				TArray<unsigned char> bytesSalt;
 				if ( lenSalt > 0 )
 				{
 					bytesSalt.Resize( lenSalt );
 					for ( int i = 0; i < lenSalt; ++i )
-						bytesSalt[i] = NETWORK_ReadByte( pByteStream );
+						bytesSalt[i] = pByteStream->ReadByte();
 				}
 				else
 					Printf ( "AUTH_SERVER_NEGOTIATE: Invalid length\n" );
-				const FString username = NETWORK_ReadString( pByteStream );
+				const FString username = pByteStream->ReadString();
 				const int clientID = SERVER_FindClientWithClientSessionID ( clientSessionID );
 				if ( clientID < MAXPLAYERS )
 				{
@@ -306,14 +304,14 @@ void SERVER_AUTH_ParsePacket( BYTESTREAM_s *pByteStream )
 			break;
 		case AUTH_SERVER_SRP_STEP_TWO:
 			{
-				const int sessionID = NETWORK_ReadLong( pByteStream );
-				const int lenB = NETWORK_ReadShort( pByteStream );
+				const int sessionID = pByteStream->ReadLong();
+				const int lenB = pByteStream->ReadShort();
 				TArray<unsigned char> bytesB;
 				if ( lenB > 0 )
 				{
 					bytesB.Resize( lenB );
 					for ( int i = 0; i < lenB; ++i )
-						bytesB[i] = NETWORK_ReadByte( pByteStream );
+						bytesB[i] = pByteStream->ReadByte();
 				}
 				else
 					Printf ( "AUTH_SERVER_SRP_STEP_TWO: Invalid length\n" );
@@ -329,14 +327,14 @@ void SERVER_AUTH_ParsePacket( BYTESTREAM_s *pByteStream )
 			break;
 		case AUTH_SERVER_SRP_STEP_FOUR:
 			{
-				const int sessionID = NETWORK_ReadLong( pByteStream );
-				const int lenHAMK = NETWORK_ReadShort( pByteStream );
+				const int sessionID = pByteStream->ReadLong();
+				const int lenHAMK = pByteStream->ReadShort();
 				TArray<unsigned char> bytesHAMK;
 				if ( lenHAMK > 0 )
 				{
 					bytesHAMK.Resize( lenHAMK );
 					for ( int i = 0; i < lenHAMK; ++i )
-						bytesHAMK[i] = NETWORK_ReadByte( pByteStream );
+						bytesHAMK[i] = pByteStream->ReadByte();
 				}
 				else
 					Printf ( "AUTH_SERVER_SRP_STEP_FOUR: Invalid length\n" );
@@ -362,8 +360,8 @@ void SERVER_AUTH_ParsePacket( BYTESTREAM_s *pByteStream )
 			break;
 		case AUTH_SERVER_USER_ERROR:
 			{
-				const int errorCode = NETWORK_ReadByte( pByteStream );
-				const unsigned int clientSessionID = NETWORK_ReadLong( pByteStream );
+				const int errorCode = pByteStream->ReadByte();
+				const unsigned int clientSessionID = pByteStream->ReadLong();
 				Printf ( "Error: Error authenticating user with session id %u.\n", clientSessionID );
 				FString errorMessage = "";
 				switch ( errorCode )
@@ -399,8 +397,8 @@ void SERVER_AUTH_ParsePacket( BYTESTREAM_s *pByteStream )
 			break;
 		case AUTH_SERVER_SESSION_ERROR:
 			{
-				const int errorCode = NETWORK_ReadByte( pByteStream );
-				const int sessionID = NETWORK_ReadLong( pByteStream );
+				const int errorCode = pByteStream->ReadByte();
+				const int sessionID = pByteStream->ReadLong();
 				Printf ( "Session error: " );
 				FString errorMessage = "";
 				switch ( errorCode )
@@ -448,8 +446,20 @@ bool SERVER_ProcessSRPClientCommand( LONG lCommand, BYTESTREAM_s *pByteStream )
 	case CLC_SRP_USER_REQUEST_LOGIN:
 		{
 			CLIENT_s *pClient = SERVER_GetClient(SERVER_GetCurrentClient());
+			FString username = pByteStream->ReadString();
 
-			pClient->username = NETWORK_ReadString( pByteStream );
+			// [AK] Make sure that the client isn't already logged in.
+			if ( pClient->loggedIn )
+				return ( false );
+
+			// [AK] Don't allow multiple clients to log into the same account.
+			if ( SERVER_FindClientWithUsername( username.GetChars()) != MAXPLAYERS )
+			{
+				SERVER_PrintfPlayer( SERVER_GetCurrentClient(), "User %s is already being used.\n", username.GetChars());
+				return ( false );
+			}
+
+			pClient->username = username;
 			pClient->clientSessionID = M_Random.GenRand32();
 
 #if EMULATE_AUTH_SERVER
@@ -465,13 +475,13 @@ bool SERVER_ProcessSRPClientCommand( LONG lCommand, BYTESTREAM_s *pByteStream )
 		{
 			CLIENT_s *pClient = SERVER_GetClient(SERVER_GetCurrentClient());
 
-			const int lenA = NETWORK_ReadShort( pByteStream );
+			const int lenA = pByteStream->ReadShort();
 
 			if ( lenA > 0 )
 			{
 				pClient->bytesA.Resize ( lenA ); 
 				for ( int i = 0; i < lenA; ++i )
-					pClient->bytesA[i] = NETWORK_ReadByte( pByteStream );
+					pClient->bytesA[i] = pByteStream->ReadByte();
 			}
 			else
 				Printf ( "CLC_SRP_USER_START_AUTHENTICATION: Invalid length\n" );
@@ -523,12 +533,12 @@ bool SERVER_ProcessSRPClientCommand( LONG lCommand, BYTESTREAM_s *pByteStream )
 		{
 			CLIENT_s *pClient = SERVER_GetClient(SERVER_GetCurrentClient());
 
-			const int lenM = NETWORK_ReadShort( pByteStream );
+			const int lenM = pByteStream->ReadShort();
 			if ( lenM > 0 )
 			{
 				pClient->bytesM.Resize ( lenM ); 
 				for ( int i = 0; i < lenM; ++i )
-					pClient->bytesM[i] = NETWORK_ReadByte( pByteStream );
+					pClient->bytesM[i] = pByteStream->ReadByte();
 			}
 			else
 				Printf ( "CLC_SRP_USER_PROCESS_CHALLENGE: Invalid length\n" );

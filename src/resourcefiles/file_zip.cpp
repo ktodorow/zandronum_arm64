@@ -205,6 +205,10 @@ bool FZipFile::Open(bool quiet)
 	Reader->Seek(LittleLong(info.DirectoryOffset), SEEK_SET);
 	Reader->Read(directory, dirsize);
 
+	// [AK] Store the names of all the lumps in the current directory.
+	TArray<FString> oldNames;
+	FString currentDirectory;
+
 	char *dirptr = (char*)directory;
 	FZipLump *lump_p = Lumps;
 	for (DWORD i = 0; i < NumLumps; i++)
@@ -274,6 +278,56 @@ bool FZipFile::Open(bool quiet)
 			memset(lump_p->Name, 0, sizeof(lump_p->Name));
 		}
 
+		// [AK] Get the full name of the directory that the lump is located in.
+		const char *directory = strrchr(name, '/');
+		FString directoryName = "/";
+
+		if (directory != NULL)
+		{
+			directoryName = name.Left(ULONG(directory - name.GetChars()));
+		}
+
+		// [AK] Check if we're in the same directory. If not, clear the list of old lump names.
+		if ((currentDirectory.IsEmpty()) || (currentDirectory.CompareNoCase(directoryName) != 0))
+		{
+			oldNames.Clear();
+			currentDirectory = directoryName;
+		}
+
+		// [AK] Check for any duplicate lumps in the current directory.
+		for (int i = oldNames.Size() - 1; i > -1; i--)
+		{
+			if (oldNames[i].CompareNoCase(name) == 0)
+			{
+				const char *shortenedFilename = strrchr(Filename, '/');
+				if (shortenedFilename != NULL) shortenedFilename++;
+
+				const char *actualFilename = shortenedFilename != NULL ? shortenedFilename : Filename;
+				bool addDuplicate = true;
+
+				// [AK] To keep the list of duplicate lumps as small as possible, first check if this
+				// particular lump isn't already on the list. If not, add it to the list then.
+				for (unsigned int j = 0; j < DuplicateLumps.Size(); j++)
+				{
+					if ((DuplicateLumps[j].CompareNoCase(lump_p->FullName) == 0) && (DuplicateLumpFilenames[j].CompareNoCase(actualFilename) == 0 ))
+					{
+						addDuplicate = false;
+						break;
+					}
+				}
+
+				if (addDuplicate)
+				{
+					DuplicateLumps.Push(lump_p->FullName);
+					DuplicateLumpFilenames.Push(actualFilename);
+				}
+
+				break;
+			}
+		}
+
+		// [AK] Add this lump name to the list.
+		oldNames.Push(name);
 		lump_p++;
 	}
 	// Resize the lump record array to its actual size

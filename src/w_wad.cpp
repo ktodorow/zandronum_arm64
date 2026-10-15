@@ -93,6 +93,10 @@ static void PrintLastError ();
 
 FWadCollection Wads;
 
+// [AK] A list of all duplicate lumps found during startup.
+TArray<FString> DuplicateLumps;
+TArray<FString> DuplicateLumpFilenames;
+
 // PRIVATE DATA DEFINITIONS ------------------------------------------------
 
 // CODE --------------------------------------------------------------------
@@ -1453,8 +1457,22 @@ void FWadCollection::LumpIsMandatory( int lumpnum )
 	}
 
 	Files[wadnum]->IsOptional = false;
+	Files[wadnum]->ContainsAuthenticatedLumps = true; // [SB]
 	DPrintf( "%s is mandatory because of lump %d (%s)\n",
 		Files[wadnum]->Filename, lumpnum, GetLumpFullName( lumpnum ));
+}
+
+//==========================================================================
+//
+// [SB] WadContainsAuthenticatedLumps
+//
+// Returns if the file contains authenticated lumps (protected or levels)
+//
+//==========================================================================
+
+bool FWadCollection::WadContainsAuthenticatedLumps( int wadnum ) const
+{
+	return Files[wadnum]->ContainsAuthenticatedLumps;
 }
 
 // FWadLump -----------------------------------------------------------------

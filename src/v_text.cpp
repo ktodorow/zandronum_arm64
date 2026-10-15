@@ -152,10 +152,8 @@ void DCanvas::DrawTextV(FFont *font, int normalcolor, int x, int y, const char *
 		// We don't handle these. :(
 		case DTA_DestWidth:
 		case DTA_DestHeight:
-			/**(DWORD *)tags = TAG_IGNORE;*/
-			data = TAG_IGNORE;
 		case DTA_Translation:
-			/**(DWORD *)tags = TAG_IGNORE;*/
+			assert("Bad parameter for DrawText" && false);
 			return;
 
 		case DTA_CleanNoMove_1:
@@ -345,75 +343,19 @@ void V_ColorizeString( char *pszString )
 	}
 
 	char *p = pszString, c;
-	int i;
 
 	while ( (c = *p++) )
 	{
-		// If we don't encounter a slash, keep parsing.
-		if (c != '\\')
-			*pszString++ = c;
+		// [AK] If we encounter a "\c", put the escaped code in the string.
+		if (( c == '\\' ) && ( *p == 'c' ))
+		{
+			*pszString++ = TEXTCOLOR_ESCAPE;
+			p++;
+		}
+		// Otherwise, keep parsing.
 		else
 		{
-			switch (*p)
-			{
-				case 'c':
-					*pszString++ = TEXTCOLOR_ESCAPE;
-					break;
-				case 'n':
-					*pszString++ = '\n';
-					break;
-				case 't':
-					*pszString++ = '\t';
-					break;
-				case 'r':
-					*pszString++ = '\r';
-					break;
-//				case '\n':
-//					break;
-				case 'x':
-				case 'X':
-					c = 0;
-					for (i = 0; i < 2; i++)
-					{
-						p++;
-						if (*p >= '0' && *p <= '9')
-							c = (c << 4) + *p-'0';
-						else if (*p >= 'a' && *p <= 'f')
-							c = (c << 4) + 10 + *p-'a';
-						else if (*p >= 'A' && *p <= 'F')
-							c = (c << 4) + 10 + *p-'A';
-						else
-						{
-							p--;
-							break;
-						}
-					}
-					*pszString++ = c;
-					break;
-				case '0':
-				case '1':
-				case '2':
-				case '3':
-				case '4':
-				case '5':
-				case '6':
-				case '7':
-					c = 0;
-					for (i = 0; i < 3; i++) {
-						c <<= 3;
-						if (*p >= '0' && *p <= '7')
-							c += *p-'0';
-						else
-							break;
-						p++;
-					}
-					*pszString++ = c;
-					break;
-				default:
-					*pszString++ = *p;
-					break;
-			}
-			p++;
+			*pszString++ = c;
 		}
 	}
 	*pszString = 0;
@@ -424,13 +366,7 @@ void V_ColorizeString( char *pszString )
 // are not needed anymore using this.
 void V_ColorizeString( FString &String )
 {
-	const int length = (int) String.Len();
-	char *tempCharArray = new char[length+1];
-	strncpy( tempCharArray, String.GetChars(), length );
-	tempCharArray[length] = 0;
-	V_ColorizeString( tempCharArray );
-	String = tempCharArray;
-	delete[] tempCharArray;
+	String.Substitute( "\\c", TEXTCOLOR_ESCAPE );
 }
 
 //*****************************************************************************
@@ -588,63 +524,61 @@ bool v_IsCharacterWhitespace ( char c )
 		return true;
 
 	// Ascii 255.
-	if ( c == static_cast<char> (255) ) //[BL] 255 is supposedly out of range for a char
+	if ( static_cast<unsigned char>( c ) == 255 ) //[BL] 255 is supposedly out of range for a char
 		return true;
 
 	return false;
 }
 
-
 // [RC] Conforms names to meet standards.
-void V_CleanPlayerName( char *pszString )
+void V_CleanPlayerName( FString &String, bool bPrintWarning )
 {
-	char	*pszStart;
-	char	*p;
-	char	c;
-	ULONG	ulStringLength;
-	ULONG   ulTotalLength;
-	ULONG   ulNonWhitespace;
-	char	szColorlessName[256];
-
-	ulStringLength = static_cast<ULONG>(strlen( pszString ));
-	ulTotalLength = 0;
-	ulNonWhitespace = 0;
-
-	// Start at the beginning of the string.
-	p = pszString;
-	pszStart = pszString;
+	ULONG ulNumActualCharacters = 0;
+	ULONG ulNonWhitespace = 0;
 
 	// The name must be longer than three characters.
-	if ( ulStringLength < 3 )
+	if ( String.Len() < 3 )
 	{
-		strcpy( pszString, "Player" );
+		String = "Player";
 		return;
 	}
 
-	// Go through and remove the illegal characters.
-	while ( (c = *p++) )
+	// [AK] We don't want the CVar to be longer than MAXPLAYERNAMEBUFER, especially if sent across the network.
+	if ( String.Len() > MAXPLAYERNAMEBUFFER )
 	{
-		if ( !v_IsCharAcceptableInNames(c) )
-		{
-			ULONG	ulPos;
-			ulStringLength = static_cast<ULONG>(strlen( pszString ));
+		if ( bPrintWarning )
+			Printf( PRINT_MEDIUM, "Your name is too long and can't be used! The maximum length is %d characters.\n", MAXPLAYERNAMEBUFFER );
 
-			// Shift the rest of the string back one.
-			for ( ulPos = 0; ulPos < ulStringLength; ulPos++ )
-				pszString[ulPos] = pszString[ulPos + 1];
+		String.Truncate( MAXPLAYERNAMEBUFFER - 2 );
+	}
+	// [AK] We also need to leave enough room to put the "\\c-" at the end of the name.
+	else if (( String.Len() == MAXPLAYERNAMEBUFFER ) && ( String[MAXPLAYERNAMEBUFFER - 2] != TEXTCOLOR_ESCAPE ))
+	{
+		if ( bPrintWarning )
+			Printf( PRINT_MEDIUM, "You didn't leave enough room for the terminating (\\c-) color code.\n" );
 
-			// Don't skip a character.
-			p--;
-		}
-		else
-		{
-			pszString++;
-			ulTotalLength++;
-		}
+		String.Truncate( MAXPLAYERNAMEBUFFER - 2 );	
 	}
 
-	// Cut the string at its new end.
-	*pszString = 0;
+	// Go through and remove the illegal characters.
+	for ( unsigned int i = 0; i < String.Len(); i++ )
+	{
+		if ( !v_IsCharAcceptableInNames( String[i] ))
+		{
+			char *pszString = String.LockBuffer();
+			
+			// Shift the rest of the string back one.
+			for ( unsigned int j = i; j < String.Len() - 1; j++ )
+				pszString[j] = pszString[j + 1];
+
+			// [AK] Remove the last character in the string.
+			String.UnlockBuffer();
+			String.Truncate( String.Len() - 1 );
+
+			// Don't skip a character.
+			i--;
+		}
+	}
 
 	// [BB] Remove any trailing incomplete escaped color codes. Since we just removed
 	// quite a bit from the string, it's possible that those are there now.
@@ -654,7 +588,7 @@ void V_CleanPlayerName( char *pszString )
 	// unescaped color codes, so I have to uncolorize, clean and colorize the name here.
 	// Not so efficient, but V_CleanPlayerName is called seldom enough so that this
 	// doesn't matter.
-	FString tempString = pszStart;
+	FString tempString = String;
 	V_UnColorizeString ( tempString );
 	V_RemoveTrailingCrapFromFString ( tempString );
 	// [BB] If the name uses color codes, make sure that it is terminated with "\\c-".
@@ -663,57 +597,60 @@ void V_CleanPlayerName( char *pszString )
 	// Hence, we have to re-add "\\c-" here.
 	if ( ( tempString.IndexOf ( "\\c" ) != -1 ) )
 	{
-		// [BB] In the uncolorized string, color codes need one additional char, take this
-		// into account when checking whether the name is too long.
+		// [AK] We want to check the length of the player's name to make sure it isn't too
+		// long, but we also don't want to add color codes to the length.
 		FString tempColorizedString = tempString.GetChars();
 		V_ColorizeString ( tempColorizedString );
-		const unsigned int numColorCodes = tempString.Len() - tempColorizedString.Len();
 
-		if ( tempString.Len() > MAXPLAYERNAME - 3 + numColorCodes )
+		for ( size_t j = 0; j < tempColorizedString.Len( ); j++ )
 		{
-			tempString = tempString.Left ( MAXPLAYERNAME - 3 + numColorCodes );
-			V_RemoveTrailingCrapFromFString ( tempString );
+			// [AK] Ignore color codes, also taking into account those that use square brackets.
+			if ( tempColorizedString[j] == TEXTCOLOR_ESCAPE )
+			{
+				if (( tempColorizedString[++j] != '\0' ) && ( tempColorizedString[j] == '[' ))
+				{
+					while (( tempColorizedString[j] != '\0') && ( tempColorizedString[j] != ']' ))
+					{
+						j++;
+					}
+				}
+			}
+			// [AK] If the name exceeds the limit then truncate the string.
+			else if ( ++ulNumActualCharacters > MAXPLAYERNAME )
+			{
+				tempColorizedString.Truncate( j );
+				V_UnColorizeString( tempColorizedString );
+				V_RemoveTrailingCrapFromFString( tempColorizedString );
+
+				tempString = tempColorizedString;
+				break;
+			}
 		}
+
 		tempString += "\\c-";
 	}
+	// [AK] Even if the name doesn't use any color codes, still make sure that its length
+	// doesn't exceed the maximum allowed characters in a player's name.
+	else if ( tempString.Len( ) > MAXPLAYERNAME )
+	{
+		tempString.Truncate( MAXPLAYERNAME );
+	}
+
 	V_ColorizeString ( tempString );
-	sprintf ( pszStart, "%s", tempString.GetChars() );
+	String = tempString;
 
 	// Determine the name's actual length.
-	strncpy( szColorlessName, pszStart, 256 );
-	V_RemoveColorCodes( szColorlessName );
+	V_RemoveColorCodes( tempString );
 	
-	p = szColorlessName;
-	ulNonWhitespace = 0;
-	while ( (c = *p++) )
+	for ( unsigned int i = 0; i < tempString.Len(); i++ )
 	{
-		if ( !v_IsCharacterWhitespace(c) )
+		if ( v_IsCharacterWhitespace( tempString[i] ) == false )
 			ulNonWhitespace++;
 	}
 		
 	// Check the length again, as characters were removed.
 	if ( ulNonWhitespace < 3 )
-		strcpy( pszStart, "Player" );
-}
-
-// [BB] Version of V_CleanPlayerName that accepts a FString as argument.
-void V_CleanPlayerName( FString &String )
-{
-	const int length = (int) String.Len();
-	// [BB] V_CleanPlayerName possibly appends "\\c-", hence we need to reserve more memory than just "length + terminating 0".
-	// [EP] Don't forget it might return "Player" in case the name results being too short.
-	char *tempCharArray = new char[MAX<size_t>(7, length+4)];
-	strncpy( tempCharArray, String.GetChars(), length );
-	tempCharArray[length] = 0;
-	V_CleanPlayerName( tempCharArray );
-	String = tempCharArray;
-	delete[] tempCharArray;
-}
-
-// [RC] Converts COL_ numbers to their \c counterparts.
-char V_GetColorChar( ULONG ulColor )
-{
-	return (char) ( 97 + (int) ulColor );
+		String = "Player";
 }
 
 // [RC] Escapes quotes and backslashes.
@@ -772,13 +709,24 @@ void V_RemoveTrailingCrap( char *pszString )
 		// [BB] Remove trailing color code of type "\c[X]".
 		else if ( pszString[ulStringLength-1] == ']' )
 		{
+			bool bHitClosingBracket = false;
 			int i = 0;
+
 			for ( i = ulStringLength-2; i >= 2; --i )
 			{
-				if ( pszString[i] == '[' )
+				// [AK] If we hit another ']' (e.g. "\c[X]]"), then it's not a trailing color code.
+				if ( pszString[i] == ']' )
+				{
+					bHitClosingBracket = true;
+					break;
+				}
+
+				// [AK] We should keep checking for "\c[" until we reach the beginning of the string,
+				// in case the string contains something like "\c[X[[[]".
+				if ( ( pszString[i] == '[' ) && V_ColorCodeStart ( pszString, i-2 ) )
 					break;
 			}
-			if ( ( i >= 2 ) && V_ColorCodeStart ( pszString, i-2 ) )
+			if ( ( bHitClosingBracket == false ) && ( i >= 2  ) )
 			{
 				pszString[i-2] = 0;
 				ulStringLength = static_cast<ULONG>(strlen( pszString ));
@@ -800,7 +748,7 @@ void V_RemoveTrailingCrap( char *pszString )
 			if ( pChar > strrchr(pszString, ']') )
 			{
 				const int index = pChar - pszString;
-				if ( ( index > 2 ) && V_ColorCodeStart ( pszString, index-2 ) )
+				if ( ( index >= 2 ) && V_ColorCodeStart ( pszString, index-2 ) )
 				{
 					pszString[index-2] = 0;
 					ulStringLength = static_cast<ULONG>(strlen( pszString ));

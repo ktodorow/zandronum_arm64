@@ -1447,7 +1447,7 @@ class CommandDrawNumber : public CommandDrawString
 					break;
 				// [BB]
 				case TEAMSCORE:
-					num = TEAM_GetScore(valueArgument);
+					num = TEAM_GetPointCount(valueArgument);
 					break;
 				case POWERUPTIME:
 				{
@@ -2859,7 +2859,7 @@ class CommandDrawBar : public SBarInfoCommand
 					break;
 				// [BB]
 				case TEAMSCORE:
-					value = TEAM_GetScore(typeArgument);
+					value = TEAM_GetPointCount(typeArgument);
 					max = pointlimit;
 					break;
 				case INVENTORY:
@@ -3625,6 +3625,137 @@ class CommandAlpha : public SBarInfoMainBlock
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+// [AK] Zandronum-exclusive commands.
+
+class CommandIfSpectator : public SBarInfoCommandFlowControl
+{
+	public:
+		CommandIfSpectator(SBarInfo *script) : SBarInfoCommandFlowControl(script),
+			negate(false), deadspectator(false)
+		{
+		}
+
+		void	Parse(FScanner &sc, bool fullScreenOffsets)
+		{
+			if (sc.CheckToken(TK_Identifier))
+			{
+				if (sc.Compare("not"))
+				{
+					negate = true;
+					if (sc.CheckToken(TK_Identifier))
+					{
+						if (sc.Compare("dead"))
+							deadspectator = true;
+						else
+							sc.ScriptError("Unknown identifier '%s'.", sc.String);
+					}
+				}
+				else if (sc.Compare("dead"))
+				{
+					deadspectator = true;
+					if (sc.CheckToken(TK_Identifier))
+					{
+						if (sc.Compare("not"))
+							sc.ScriptError("The 'not' identifier must come first before 'dead'.");
+						else
+							sc.ScriptError("Unknown identifier '%s'.", sc.String);
+					}
+				}
+				else
+					sc.ScriptError("Unknown identifier '%s'.", sc.String);
+			}
+			SBarInfoCommandFlowControl::Parse(sc, fullScreenOffsets);
+		}
+
+		void	Tick(const SBarInfoMainBlock *block, const DSBarInfo *statusBar, bool hudChanged)
+		{
+			SBarInfoCommandFlowControl::Tick(block, statusBar, hudChanged);
+
+			// [AK] Check if the local player is (not) also a dead spectator.
+			if(deadspectator)
+				SetTruth((players[consoleplayer].bDeadSpectator) ^ negate, block, statusBar);
+			// [AK] Otherwise, just check if they're (not) a spectator.
+			else
+				SetTruth((players[consoleplayer].bSpectating) ^ negate, block, statusBar);
+		}
+	protected:
+		bool negate;
+		bool deadspectator;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+class CommandIfSpying : public SBarInfoCommandFlowControl
+{
+	public:
+		CommandIfSpying(SBarInfo *script) : SBarInfoCommandFlowControl(script),
+			negate(false)
+		{
+		}
+
+		void	Parse(FScanner &sc, bool fullScreenOffsets)
+		{
+			if (sc.CheckToken(TK_Identifier))
+			{
+				if (sc.Compare("not"))
+					negate = true;
+				else
+					sc.ScriptError("Expected 'not', but got '%s' instead.", sc.String);
+			}
+
+			SBarInfoCommandFlowControl::Parse(sc, fullScreenOffsets);
+		}
+
+		void	Tick(const SBarInfoMainBlock *block, const DSBarInfo *statusBar, bool hudChanged)
+		{
+			SBarInfoCommandFlowControl::Tick(block, statusBar, hudChanged);
+			SetTruth((statusBar->CPlayer != &players[consoleplayer]) ^ negate, block, statusBar);
+		}
+	protected:
+		bool negate;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
+class CommandIfHealth : public SBarInfoCommandFlowControl
+{
+	public:
+		CommandIfHealth(SBarInfo *script) : SBarInfoCommandFlowControl(script),
+			negate(false), percentage(false)
+		{
+		}
+
+		void	Parse(FScanner &sc, bool fullScreenOffsets)
+		{
+			if (sc.CheckToken(TK_Identifier))
+			{
+				if (sc.Compare("not"))
+					negate = true;
+				else
+					sc.ScriptError("Expected 'not', but got '%s' instead.", sc.String);
+			}
+
+			sc.MustGetToken(TK_IntConst);
+			percentage = sc.CheckToken('%');
+			hpamount = sc.Number;
+
+			SBarInfoCommandFlowControl::Parse(sc, fullScreenOffsets);
+		}
+		void	Tick(const SBarInfoMainBlock *block, const DSBarInfo *statusBar, bool hudChanged)
+		{
+			SBarInfoCommandFlowControl::Tick(block, statusBar, hudChanged);
+
+			int phealth = percentage ? statusBar->CPlayer->mo->health * 100 / statusBar->CPlayer->mo->GetMaxHealth() : statusBar->CPlayer->mo->health;
+
+			SetTruth((phealth >= hpamount) ^ negate, block, statusBar);
+		}
+	protected:
+		bool	negate;
+		bool	percentage;
+		int		hpamount;
+};
+
+////////////////////////////////////////////////////////////////////////////////
 
 static const char *SBarInfoCommandNames[] =
 {
@@ -3635,7 +3766,10 @@ static const char *SBarInfoCommandNames[] =
 	"gamemode", "playerclass", "playertype", "aspectratio",
 	"isselected", "usesammo", "usessecondaryammo",
 	"hasweaponpiece", "inventorybarnotvisible",
-	"weaponammo", "ininventory", "alpha",
+	"weaponammo", "ininventory", "alpha", "ifhealth",
+
+	// [AK] Zandronum-exclusive commands.
+	"ifspectator", "ifspying",
 	NULL
 };
 
@@ -3648,7 +3782,10 @@ enum SBarInfoCommands
 	SBARINFO_GAMEMODE, SBARINFO_PLAYERCLASS, SBARINFO_PLAYERTYPE, SBARINFO_ASPECTRATIO,
 	SBARINFO_ISSELECTED, SBARINFO_USESAMMO, SBARINFO_USESSECONDARYAMMO,
 	SBARINFO_HASWEAPONPIECE, SBARINFO_INVENTORYBARNOTVISIBLE,
-	SBARINFO_WEAPONAMMO, SBARINFO_ININVENTORY, SBARINFO_ALPHA,
+	SBARINFO_WEAPONAMMO, SBARINFO_ININVENTORY, SBARINFO_ALPHA, SBARINFO_IFHEALTH,
+
+	// [AK] Zandronum-exclusive commands.
+	SBARINFO_IFSPECTATOR, SBARINFO_IFSPYING,
 };
 
 SBarInfoCommand *SBarInfoCommandFlowControl::NextCommand(FScanner &sc)
@@ -3681,6 +3818,11 @@ SBarInfoCommand *SBarInfoCommandFlowControl::NextCommand(FScanner &sc)
 			case SBARINFO_WEAPONAMMO: return new CommandWeaponAmmo(script);
 			case SBARINFO_ININVENTORY: return new CommandInInventory(script);
 			case SBARINFO_ALPHA: return new CommandAlpha(script);
+			case SBARINFO_IFHEALTH: return new CommandIfHealth(script);
+
+			// [AK] Zandronum-exclusive commands.
+			case SBARINFO_IFSPECTATOR: return new CommandIfSpectator(script);
+			case SBARINFO_IFSPYING: return new CommandIfSpying(script);
 		}
 
 		sc.ScriptError("Unknown command '%s'.\n", sc.String);

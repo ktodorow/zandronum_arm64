@@ -223,6 +223,8 @@ TArray<FPlayerStart> TerminatorStarts(16);
 // [BB] All player starts, including those for voodoo dolls.
 TArray<FPlayerStart> AllStartsOfPlayer[MAXPLAYERS];
 
+// [AK] All available player starts, excluding those for voodoo dolls.
+TArray<FPlayerStart> AvailableCooperativeStarts;
 
 static void P_AllocateSideDefs (int count);
 
@@ -1789,6 +1791,9 @@ static void SetMapThingUserData(AActor *actor, unsigned udi)
 		else
 		{ // Set the value of the specified user variable.
 			*(int *)(reinterpret_cast<BYTE *>(actor) + var->offset) = value;
+
+			// [BOF] Store this value in another variable for map resets.
+			actor->savedUserVars.Insert(var, value);
 		}
 	}
 }
@@ -1947,8 +1952,14 @@ void P_SpawnThings (int position)
 		// [BB] When we are using unassigned voodoo dolls, we have to enforce the spawning
 		// of all dolls for all players (even those who are not in the game) now.
 		COOP_SpawnVoodooDollsForPlayerIfNecessary ( i, sv_coopunassignedvoodoodolls );
-		if (playeringame[i] && players[i].mo != NULL)
-			P_PlayerStartStomp(players[i].mo);
+
+		// [SB] If we are in online or multiplayer emulation, at this point we will be spawning voodoo dolls,
+		// but the actual player mobjs will be spawned later. As such, handling spawn telefragging now will
+		// only result in telefragging the voodoo dolls, which can cause havoc on maps like Plutonia MAP06.
+		// Since the multiplayer spawning code also handles telefragging, skip it here.
+		if ( NETWORK_GetState() == NETSTATE_SINGLE )
+			if (playeringame[i] && players[i].mo != NULL)
+				P_PlayerStartStomp(players[i].mo);
 	}
 	// [BB] When initially spawning the voodoo dolls, we also need to clear the stored pickups
 	// of the unassigned dolls.
@@ -2695,10 +2706,17 @@ void P_ProcessSideTextures(bool checktranmap, side_t *sd, sector_t *sec, mapside
 		break;
 	}
 
-	// [BC/BB] Backup certain properties.
-	sd->SavedTopTexture = sd->GetTexture(side_t::top);
-	sd->SavedMidTexture = sd->GetTexture(side_t::mid);
-	sd->SavedBottomTexture = sd->GetTexture(side_t::bottom);
+	// [BC/BB/AK] Backup certain properties.
+	for (int position = side_t::top; position <= side_t::bottom; position++)
+	{
+		sd->textures[position].SavedXOffset = sd->GetTextureXOffset(position);
+		sd->textures[position].SavedYOffset = sd->GetTextureYOffset(position);
+
+		sd->textures[position].SavedXScale = sd->GetTextureXScale(position);
+		sd->textures[position].SavedYScale = sd->GetTextureYScale(position);
+
+		sd->textures[position].SavedTexture = sd->GetTexture(position);
+	}
 }
 
 // killough 4/4/98: delay using texture names until
@@ -3714,7 +3732,8 @@ void P_RemoveThings( void )
 		// to delete the white flags, which are used for one flag CTF.
 		if (( teamgame ) && ( oneflagctf == false ))
 		{
-			if ( pActor->IsKindOf( PClass::FindClass( "WhiteFlag" )))
+			// [TRSR] Unless a mod explicitly wants their WhiteFlag replacement to spawn in other modes.
+			if (( pActor->IsKindOf( PClass::FindClass( "WhiteFlag" ))) && ( pActor->flags & MF_NOTDMATCH ))
 			{
 				P_RemoveThingLocal( pActor );
 				continue;
@@ -3967,6 +3986,8 @@ void P_SetupLevel (char *lumpname, int position)
 		SERVER_ClearEditedTranslations( );
 		// [BB] And the stored sector links.
 		SERVER_ClearSectorLinks( );
+		// [AK] And the looping sound channels of any actors.
+		SERVER_ClearLoopingChannels( NULL );
 	}
 
 	// Initial height of PointOfView will be set by player think.
@@ -4355,7 +4376,10 @@ void P_SetupLevel (char *lumpname, int position)
 // not assumed to be from this one.
 
 	for (i = 0; i < BODYQUESIZE; i++)
+	{
 		bodyque[i] = NULL;
+		bodyquePlayer[i] = nullptr; // [AK]
+	}
 
 	deathmatchstarts.Clear();
 	AllPlayerStarts.Clear();
@@ -4364,6 +4388,7 @@ void P_SetupLevel (char *lumpname, int position)
 	GenericInvasionStarts.Clear( );
 	PossessionStarts.Clear();
 	TerminatorStarts.Clear();
+	AvailableCooperativeStarts.Clear();
 	for (i = 0; i < MAXPLAYERS; ++i)
 		AllStartsOfPlayer[i].Clear();
 
@@ -4391,6 +4416,9 @@ void P_SetupLevel (char *lumpname, int position)
 			}
 		}
 	}
+
+	// [JM] Event for early setup before things are spawned and OPEN scripts are executed.
+	GAMEMODE_HandleEvent(GAMEEVENT_LEVEL_INIT, 0, 0, 0, true);
 
 	if (!buildmap)
 	{
@@ -4465,6 +4493,13 @@ void P_SetupLevel (char *lumpname, int position)
 	delete[] sidetemp;
 	sidetemp = NULL;
 
+	// [AK] If there's available start points for each player, add them to the list.
+	for ( i = 0; i < MAXPLAYERS; i++ )
+	{
+		if ( playerstarts[i].type != 0 )
+			AvailableCooperativeStarts.Push( playerstarts[i] );
+	}
+
 	/* [BC/BB] Zandronum handles spawning differently.
 	// if deathmatch, randomly spawn the active players
 	if (deathmatch)
@@ -4524,9 +4559,9 @@ void P_SetupLevel (char *lumpname, int position)
 					if ( players[i].bOnTeam && ( GAMEMODE_GetCurrentFlags() & GMF_PLAYERSONTEAMS ) )
 						PLAYER_SetTeam( &players[i], teams.Size( ), true );
 
-					// [BB] In duel the players should keep their position in line after a "changemap"
-					// map change.
-					if ( duel == false )
+					// [AK] Players only keep their position in line after a "changemap" map change
+					// if ZADF_DONT_KEEP_JOIN_QUEUE isn't enabled.
+					if ( zadmflags & ZADF_DONT_KEEP_JOIN_QUEUE )
 					{
 						// [BB] If the player was in the join queue, remove him.
 						JOINQUEUE_RemovePlayerFromQueue ( i );
@@ -4557,7 +4592,7 @@ void P_SetupLevel (char *lumpname, int position)
 			// The campaign could have already put them on a team.
 			if ( players[i].bOnTeam )
 			{
-				G_TeamgameSpawnPlayer( i, players[i].ulTeam, false );
+				G_TeamgameSpawnPlayer( i, players[i].Team, false );
 			}
 			else
 				G_TemporaryTeamSpawnPlayer( i, false );
@@ -4565,7 +4600,16 @@ void P_SetupLevel (char *lumpname, int position)
 		}
 
 		if ( NETWORK_GetState( ) != NETSTATE_SINGLE )
+		{
+			// [AK] When a client changes their class (i.e. when the server gets their userinfo), cls is reset
+			// to NULL. We don't want them to change their class when travelling from one map to the next
+			// because a travelling player gets its inventory (from the previous class) from the last map.
+			// Unless they died and need to respawn with the new class, reset cls back to their current class.
+			if (( players[i].cls == NULL ) && ( players[i].playerstate == PST_LIVE ))
+				players[i].cls = PlayerClasses[players[i].CurrentPlayerClass].Type;
+
 			G_CooperativeSpawnPlayer( i, false );
+		}
 	}
 
 	// set up world state
@@ -4661,6 +4705,11 @@ void P_SetupLevel (char *lumpname, int position)
 	// a "map" map change during possessions hold countdown to a CTF/ST map, the counter would stay
 	// on the screen of the clients after the map change.
 	{
+		// [AK] In case we changed levels in the middle of a duel's win sequence, just start a new duel
+		// so the loser still gets sent to spectators.
+		if (( DUEL_GetState( ) == DS_WINSEQUENCE ) && ( DUEL_GetStartNextDuelOnLevelLoad( ) == false ))
+			DUEL_SetStartNextDuelOnLevelLoad( true );
+
 		DUEL_SetState( DS_WAITINGFORPLAYERS );
 		LASTMANSTANDING_SetState( LMSS_WAITINGFORPLAYERS );
 		POSSESSION_SetState( PSNS_WAITINGFORPLAYERS );
@@ -4671,6 +4720,16 @@ void P_SetupLevel (char *lumpname, int position)
 		// [BB] We have to reset the state though when this is a new game.
 		if ( ( SURVIVAL_GetState( ) == SURVS_COUNTDOWN ) || ( gameaction == ga_newgame ) )
 			SURVIVAL_SetState( SURVS_WAITINGFORPLAYERS );
+
+		// [AK] If we still advanced to the next map when the mission failed, then either the countdown
+		// if there's still people playing, or reset the state entirely.
+		if ( SURVIVAL_GetState( ) == SURVS_MISSIONFAILED )
+		{
+			if ( SERVER_CalcNumNonSpectatingPlayers( MAXPLAYERS ) < 1 )
+				SURVIVAL_SetState( SURVS_WAITINGFORPLAYERS );
+			else
+				SURVIVAL_StartCountdown(( sv_survivalcountdowntime > 0 ? sv_survivalcountdowntime : 20 ) * TICRATE - 1 );
+		}
 	}
 
 	if ( NETWORK_InClientMode() == false )

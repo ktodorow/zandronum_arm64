@@ -414,8 +414,7 @@ ListMenu "PlayerMenu"
 	
 	// [TP] Zandronum does not store team in userinfo
 	// ValueText "Team", "Team"
-	// [TP] For now Zandronum doesn't support colorsets either.
-	// ValueText "Color", "Color"
+	ValueText "Color", "Color"
 	Linespacing 10
 	Slider "Red", "Red", 0, 255, 16
 	Slider "Green", "Green", 0, 255, 16
@@ -477,15 +476,19 @@ OptionMenu "CustomizeControls"
 	Control 	"Run",					"+speed"
 	Control 	"Strafe",				"+strafe"
 	Control 	"Show Scoreboard",		"+showscores"
-	Control		"Show medals",			"+showmedals" // [TP]
+	Control		"Scroll scoreboard up",		"+sb_scrollup" // [AK]
+	Control		"Scroll scoreboard down",	"+sb_scrolldn" // [AK]
 	StaticText 	""
 	StaticText 	"Chat", 1
 	Control 	"Say",					"messagemode"
 	Control 	"Team say",				"messagemode2"
+	Control		"Private say",				"messagemode3" // [AK]
+	Control		"Voice chat",				"+voicerecord" // [AK]
 	StaticText 	""
 	StaticText 	"Weapons", 1
 	Control 	"Next weapon",			"weapnext"
 	Control 	"Previous weapon",		"weapprev"
+	Control		"Swap weapon", 			"weapswap" // [AK]
 	Control		"Weapon Slot 1",		"slot 1"
 	Control		"Weapon Slot 2",		"slot 2"
 	Control		"Weapon Slot 3",		"slot 3"
@@ -516,8 +519,10 @@ OptionMenu "CustomizeControls"
 	Control 	"Toggle automap",		"togglemap"
 	Control 	"Chasecam",				"chase"
 	Control 	"Coop spy",				"spynext"
+	Control		"Item carrier spy",			"spycarrier" // [AK]
 	Control 	"Screenshot",			"screenshot"
 	Control		"Spectate",				"spectate" // [TP]
+	Control		"Switch teams",				"changeteam" // [AK]
 	Control		"Taunt",				"taunt" // [TP]
 	Option		"Join the game",		"joinmenukey", "JoinMenuKeys" // [TP]
 	Control		"Join the game (custom)", "menu_join" // [TP]
@@ -573,8 +578,8 @@ OptionMenu "MouseOptions"
 	StaticText 	""
 	Slider "Overall sensitivity",		"mouse_sensitivity", 0.5, 2.5, 0.1
 	Option "Prescale mouse movement",	"m_noprescale", "NoYes"
-	// [BB] smooth_mouse doesn't do anything in Skulltag (Carn deactivated it long ago), so link this to m_filter.
-	Option "Smooth mouse movement",		"m_filter", "YesNo"
+	Option "Smooth mouse movement",		"smooth_mouse", "YesNo"
+	Option "Use old Skulltag mouse",	"cl_useskulltagmouse", "YesNo" // [AK]
 	StaticText 	""
 	Slider "Turning speed",				"m_yaw", 0, 2.5, 0.1
 	Slider "Mouselook speed",			"m_pitch", 0, 2.5, 0.1
@@ -806,6 +811,7 @@ OptionMenu "HUDOptions"
 	Title "HUD Options"
 	Submenu "Alternative HUD",			"AltHudOptions"
 	Submenu "Message Options", 			"MessageOptions"
+	Submenu "Scoreboard Options", 			"ScoreboardOptions" // [AK]
 	StaticText " "
 	Option "Default Crosshair",			"crosshair", "Crosshairs"
 	Option "Force default crosshair",	"crosshairforce", "OnOff"
@@ -814,6 +820,7 @@ OptionMenu "HUDOptions"
 	Option "Crosshair shows health",	"crosshairhealth", "OnOff"
 	Option "Scale crosshair",			"crosshairscale", "OnOff"
 	Option "Voting display",			"cl_showfullscreenvote", "ZA_VotingDisplay"
+	Option "Hide vote screen after vote",		"cl_hidevotescreen", "YesNo" // [AK]
 	Option "Fullscreen HUD",			"cl_stfullscreenhud", "ZA_FullscreenHUD"
 	StaticText " "
 	Option "Large frag messages",		"cl_showlargefragmessages",	"YesNo" // [TP]
@@ -927,6 +934,7 @@ OptionMenu "MiscOptions"
 	}
 	Option "Show IWAD selection dialog",			"queryiwad", "OnOff"
 	StaticText " "
+	Option "Protect cvars from consolecommand",		"cl_protectcvars", "OnOff" // [AK]
 	Option "Enable cheats from all games",			"allcheats", "OnOff"
 	Option "Enable autosaves",						"disableautosave", "Autosave"
 	Slider "Number of autosaves",					"autosavecount", 1, 20, 1, 0
@@ -1138,16 +1146,14 @@ OptionValue MessageLevels
 	0.0, "Item Pickup"
 	1.0, "Obituaries"
 	2.0, "Critical Messages"
+	// [AK] Added chat levels.
+	3.0, "Chat Messages"
+	4.0, "Team Messages"
+	5.0, "Private Messages"
 }
 
-// [TP]
-OptionValue ZA_ChatSound
-{
-	0, "Off"
-	1, "Default"
-	2, "Doom 1"
-	3, "Doom 2"
-}
+// [TP/AK] The values get filled in by Zandronum.
+OptionValue ZA_ChatSound { }
 
 // [TP]
 OptionValue ZA_ColorInMessages
@@ -1164,11 +1170,20 @@ OptionMenu MessageOptions
 	Option "Show messages",				"show_messages", "OnOff"
 	Option "Show obituaries",			"show_obituaries", "OnOff"
 	Option "Chat sound",				"chat_sound", "ZA_ChatSound" // [TP]
+	Option "Private chat sound",			"privatechat_sound", "ZA_ChatSound" // [AK]
 	// [EP] con_scaletext is moved to the "Text scaling" submenu
 	// Option "Scale text in high res", 	"con_scaletext", "ScaleValues"
 	Option "Minimum message level", 	"msg", "MessageLevels"
 	Option "Center messages",			"con_centernotify", "OnOff"
 	Option "Color in messages",			"con_colorinmessages", "ZA_ColorInMessages" // [TP]
+	// [AK] Added textfields for the chat prefix/suffix.
+	StaticText " "
+	SafeCommand "Clear chat prefix",		"cl_chatprefix \"\""
+	TextField "Chat prefix",			"cl_chatprefix"
+	StaticText " "
+	SafeCommand "Clear chat suffix",		"cl_chatsuffix \"\""
+	TextField "Chat suffix",			"cl_chatsuffix"
+
 	StaticText " "
 	StaticText "Message Colors", 1
 	StaticText " "
@@ -1177,10 +1192,12 @@ OptionMenu MessageOptions
 	Option "Critical Messages",			"msg2color", "TextColors"
 	Option "Chat Messages",				"msg3color", "TextColors"
 	Option "Team Messages",				"msg4color", "TextColors"
+	Option "Private Messages",			"msg5color", "TextColors" // [AK]
 	Option "Centered Messages",			"msgmidcolor", "TextColors"
 	StaticText " "
 	Option "Screenshot messages",		"screenshot_quiet",	"OffOn"
 	Option "Detailed save messages",	"longsavemessages",	"OnOff"
+	Option "Display Console Timestamps",	"con_showtimestamps", 	"YesNo" // [AK]
 }
 
 //-------------------------------------------------------------------------------------------
@@ -1189,9 +1206,104 @@ OptionMenu MessageOptions
 //
 //-------------------------------------------------------------------------------------------
 
+// [AK]
+OptionValue ZA_CountryCodeFormat
+{
+	0, "Alpha-2"
+	1, "Alpha-3"
+}
+
+// [AK]
+OptionValue ZA_LimitStringFormat
+{
+	0, "Score limit to win"
+	1, "How much score left"
+}
+
+// [AK]
+OptionValue ZA_HorizontalAlignment
+{
+	0, "Left"
+	1, "Center"
+	2, "Right"
+}
+
+// [AK]
+OptionValue ZA_VerticalAlignment
+{
+	0, "Top"
+	1, "Center"
+	2, "Bottom"
+}
+
+// [AK] A separate menu for custom scoreboard properties.
+OptionMenu CustomizeScoreboardMenu
+{
+	Title "CUSTOMIZE SCOREBOARD"
+
+	SafeCommand "Restore to default",	"restorescoreboardproperties"
+	StaticText " "
+	Option "Customize text",		"sb_customizetext", "YesNo"
+	Option "Use team text colors",		"sb_useteamtextcolors", "YesNo"
+	TextField "Header font",		"sb_headerfont"
+	TextField "Row font",			"sb_rowfont"
+	TextField "Margin font",		"sb_marginfont"
+	Option "Header color",			"sb_headertextcolor", "TextColors"
+	Option "Row color",			"sb_rowtextcolor", "TextColors"
+	Option "Local row color",		"sb_localrowtextcolor", "TextColors"
+	Option "Local row demo color",		"sb_localrowdemotextcolor", "TextColors"
+	StaticText " "
+	Option "Customize borders",		"sb_customizeborders", "YesNo"
+	Option "No borders",			"sb_noborders", "YesNo"
+	Option "Use header text color",		"sb_useheadertextcolorforborders", "YesNo"
+	ColorPicker "Light color",		"sb_lightbordercolor"
+	ColorPicker "Dark color",		"sb_darkbordercolor"
+	StaticText " "
+	Option "Customize background",		"sb_customizebackground", "YesNo"
+	ColorPicker "Background color",		"sb_backgroundcolor"
+	Slider "Background alpha",		"sb_backgroundalpha", 0.0, 1.0, 0.05
+	StaticText " "
+	Option "Customize row backgrounds",	"sb_customizerowbackgrounds", "YesNo"
+	Option "Show gaps",			"sb_showgapsinrowbackground", "YesNo"
+	Option "No local row color",		"sb_nolocalrowbackgroundcolor", "YesNo"
+	Option "Only show local row",		"sb_onlylocalrowbackground", "YesNo"
+	ColorPicker "Light color",		"sb_lightrowbackgroundcolor"
+	ColorPicker "Dark color",		"sb_darkrowbackgroundcolor"
+	ColorPicker "Local color",		"sb_localrowbackgroundcolor"
+	Slider "Background alpha",		"sb_rowbackgroundalpha", 0.0, 1.0, 0.05
+	Slider "Dead Background alpha",		"sb_deadrowbackgroundalpha", 0.0, 1.0, 0.05
+}
+
 OptionMenu ScoreboardOptions
 {
 	Title "SCOREBOARD OPTIONS"
+
+	// [AK] Zandronum has its own options for the scoreboard.
+	Submenu "Customize scoreboard",		"CustomizeScoreboardMenu"
+	StaticText " "
+	Option "Colorize pings",		"cl_colorizepings", "YesNo"
+	Option "Use short column names",	"cl_useshortcolumnnames", "YesNo"
+	Option "Show intermission timer",	"cl_intermissiontimer", "YesNo"
+	Option "No countries if unavailable",	"cl_nocountriesifunavailable", "YesNo"
+	Option "Country code format",		"cl_usealpha3countrycode", "ZA_CountryCodeFormat"
+	Option "Limit string format",		"cl_showscoreleft", "ZA_LimitStringFormat"
+	Slider "Translucency",			"cl_scoreboardalpha", 0, 1, 0.05
+	Slider "Scroll speed",			"cl_scoreboardscrollspeed", 1, 64, 1
+	StaticText " "
+	Slider "Max width (%)",			"cl_maxscoreboardwidth", 0.1, 1.0, 0.05
+	Slider "Max height (%)",		"cl_maxscoreboardheight", 0.1, 1.0, 0.05
+	StaticText " "
+	Option "Horizontal alignment",		"cl_scoreboardhorizalign", "ZA_HorizontalAlignment"
+	Option "Vertical alignment",		"cl_scoreboardvertalign", "ZA_VerticalAlignment"
+	TextField "X-offset",			"cl_scoreboardx"
+	TextField "Y-offset",			"cl_scoreboardy"
+	StaticText " "
+	Option "Use custom scale",		"cl_usescoreboardscale", "YesNo"
+	Option "Use screen ratio",		"cl_usescoreboardscale_screenratio", "YesNo", "cl_usescoreboardscale"
+	TextField "Screen width",		"cl_scoreboardscreenwidth", "cl_usescoreboardscale"
+	TextField "Screen height",		"cl_scoreboardscreenheight", "cl_usescoreboardscale"
+
+	/* 
 	StaticText "Cooperative Options", 1
 	StaticText " "
 	Option "Enable Scoreboard",		"sb_cooperative_enable", "YesNo"
@@ -1212,6 +1324,7 @@ OptionMenu ScoreboardOptions
 	StaticText " "
 	Option "Enable Scoreboard",		"sb_teamdeathmatch_enable", "YesNo"
 	Option "Header Color",			"sb_teamdeathmatch_headingcolor", "TextColors"
+	*/
 }
 
 /*=======================================
@@ -1248,7 +1361,8 @@ OptionMenu GameplayOptions
 {
 	Title 	"GAMEPLAY OPTIONS"
 	//Indent 222
-	Option "Teamplay",				"teamplay",	"OnOff"
+	// [AK] "teamplay" is a latch CVar in Zandronum.
+	// Option "Teamplay",				"teamplay",	"OnOff"
 	Slider	"Team damage scalar",	"teamdamage", 0, 1, 0.05
 	StaticText " "
 	Option "Smart Autoaim",			"sv_smartaim", "SmartAim"
@@ -1277,6 +1391,7 @@ OptionMenu GameplayOptions
 	// [TP] Zandronum has this CVar under a different name
 	// Option "Allow BFG aiming",		"sv_nobfgaim", "NoYes"
 	Option "Allow BFG aiming",		"sv_bfgfreeaim", "YesNo"
+	Option "Allow Unlagged BFG tracers",	"sv_nounlaggedbfgtracers", "NoYes"
 	Option "Allow automap",			"sv_noautomap", "NoYes"
 	Option "Automap allies",		"sv_noautomapallies", "NoYes"
 	Option "Allow spying",			"sv_disallowspying", "NoYes"
@@ -1294,6 +1409,11 @@ OptionMenu GameplayOptions
 	Option "Force OpenGL defaults",	"sv_forcegldefaults", "YesNo"
 	Option "Force translucency",	"sv_forcealpha", "YesNo"
 	Option "Full blood brightness",	"sv_maxbloodscalar", "YesNo"
+	Option "Force software pitch limits",	"sv_forcesoftwarepitchlimits", "YesNo"
+	Option "Shoot through allies",	"sv_shootthroughallies", "YesNo"
+	Option "Attacks push allies",	"sv_dontpushallies", "NoYes"
+	Option "Clear join queue between levels",	"sv_dontkeepjoinqueue", "YesNo"
+	Option "Don't override player colors",	"sv_dontoverrideplayercolors", "YesNo"
 	// [TP] --
 
 	StaticText " "
@@ -1307,6 +1427,8 @@ OptionMenu GameplayOptions
 	Option "Force respawn",			"sv_forcerespawn", "YesNo"
 	// [TP] Force respawn time option
 	NumberField	"Force respawn time limit",	"sv_forcerespawntime", 0, 60, 1, "sv_forcerespawn"
+	// [AK] Added a respawn delay time option.
+	NumberField 	"Respawn delay time",		"sv_respawndelaytime", 1, 10, 1
 	Option "Allow exit",			"sv_noexit", "NoYes"
 	Option "Barrels respawn",		"sv_barrelrespawn", "YesNo"
 	// [TP] Zandronum has this CVar under a different name
@@ -1322,6 +1444,7 @@ OptionMenu GameplayOptions
 	Option "Server picks teams (ST/CTF)", "sv_noteamselect", "YesNo"
 	Option "Keep teams across levels", "sv_keepteams", "YesNo"
 	Option "Apply LMS spectator settings",	"sv_applylmsspectatorsettings", "YesNo"
+	Option "Don't hide enemy player stats",	"sv_donthidestats", "YesNo"
 	Option "Medals",				"sv_nomedals", "NoYes"
 	// [TP] --
 
@@ -1350,7 +1473,10 @@ OptionMenu GameplayOptions
 	Option "Start with shotgun",	"sv_shotgunstart", "YesNo"
 	Option "Spawn singleplayer actors", "sv_coop_spactorspawn", "YesNo"
 	Option "Share keys",			"sv_sharekeys", "YesNo"
+	Option "Reset map upon death in survival",	"sv_survival_nomapresetondeath", "NoYes"
+	Option "Dead players can keep inventory",	"sv_deadplayerscankeepinventory", "YesNo"
 	Option "Allow coop info",		"sv_nocoopinfo", "NoYes"
+	Option "Allow closing doors",		"sv_nodoorclose", "NoYes"
 	// [TP] --
 	Class "GameplayMenu"
 }
@@ -1443,6 +1569,9 @@ OptionMenu "CompatibilityOptions"
 	Option "Weapons must be lowered fully",				"compat_fullweaponlower", "YesNo"
 	Option "Auto-aiming has vertical holes",			"compat_autoaim", "YesNo"
 	Option "West facing spawns are silent",				"compat_silentwestspawns", "YesNo"
+	Option "Use old Skulltag jumping behavior",			"compat_skulltagjumping", "YesNo"
+	Option "Reset global ACS variables upon map reset",		"compat_resetglobalvarsonmapreset", "YesNo"
+	Option "No obituaries",								"compat_noobituaries", "YesNo"
 	
 	Class "CompatibilityMenu"
 }
@@ -1503,7 +1632,8 @@ OptionString SoundOutputsWindows
 	"WASAPI",		"Vista WASAPI"
 	"ASIO",			"ASIO"
 	"WaveOut",		"WaveOut"
-	"OpenAL",		"OpenAL (very beta)"
+	// [AK] OpenAL was removed in the FMOD version used in Zandronum 3.1 and over.
+	// "OpenAL",		"OpenAL (very beta)"
 	"No sound",		"No sound"
 }
 
@@ -1578,6 +1708,7 @@ OptionMenu SoundOptions
 	Slider "Sound channels",	"snd_channels", 8, 256, 8, 0
 	Option "Play connect sound", "cl_connectsound", "YesNo" // [TP]
 	Option "Multiple announcer sounds", "cl_allowmultipleannouncersounds", "YesNo" // [TP]
+	Option "Lock music",		"snd_lockmusic", "YesNo" // [AK]
 	StaticText " "
 	Command "Restart sound",	"snd_reset"
 	StaticText " "
@@ -1601,6 +1732,7 @@ OptionMenu SoundOptions
 	StaticText " "
 	Submenu "Advanced options",			"AdvSoundOptions"
 	Submenu "Module replayer options",	"ModReplayerOptions"
+	Submenu "Voice chat options",		"ZA_VoiceChatOptions" // [AK]
 }
 
 /*=======================================

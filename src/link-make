@@ -1,1 +1,0 @@
-if [ ! -e /media/sda1/sources/hg/zandronum/zandronum ]; then ln -sf /media/sda1/sources/hg/zandronum/src/zandronum /media/sda1/sources/hg/zandronum/zandronum; fi

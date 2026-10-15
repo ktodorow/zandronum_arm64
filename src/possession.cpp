@@ -65,6 +65,8 @@
 #include "sbar.h"
 #include "scoreboard.h"
 #include "v_video.h"
+#include "st_hud.h"
+#include "c_console.h"
 
 //*****************************************************************************
 //	PROTOTYPES
@@ -243,14 +245,6 @@ void POSSESSION_Tick( void )
 //
 void POSSESSION_Render( void )
 {
-	char		szString[16];
-	ULONG		ulColor;
-	bool		bScale;
-	UCVarValue	ValWidth;
-	UCVarValue	ValHeight;
-	float		fXScale;
-	float		fYScale = 0.0f;
-
 	// If the artifact isn't being held by anyone, just break out since we
 	// don't have a timer to draw.
 	if ( g_PSNState != PSNS_ARTIFACTHELD )
@@ -260,58 +254,22 @@ void POSSESSION_Render( void )
 	if ( automapactive )
 		return;
 
-	// Initialization.
-	if (( con_scaletext ) && ( con_virtualwidth > 0 ) && ( con_virtualheight > 0 ))
-	{
-		ValWidth = con_virtualwidth.GetGenericRep( CVAR_Int );
-		ValHeight = con_virtualheight.GetGenericRep( CVAR_Int );
-
-		fXScale =  (float)ValWidth.Int / 320.0f;
-		fYScale =  (float)ValHeight.Int / 200.0f;
-		bScale = true;
-	}
-	else
-		bScale = false;
-
-	ulColor = ( g_ulPSNArtifactHoldTicks > ( 3 * TICRATE )) ? CR_GRAY : CR_RED;
-	sprintf( szString , "%02d:%02d", static_cast<unsigned int> (( g_ulPSNArtifactHoldTicks + TICRATE ) / ( TICRATE * 60 )), static_cast<unsigned int> ((( g_ulPSNArtifactHoldTicks + TICRATE ) - ((( g_ulPSNArtifactHoldTicks + TICRATE ) / ( TICRATE * 60 )) * ( TICRATE * 60 ))) / TICRATE) );
-	V_ColorizeString( szString );
-
 	// [RC] Hide this when the scoreboard is up to prevent overlapping.
-	if( SCOREBOARD_ShouldDrawBoard( consoleplayer ) )
+	if ( SCOREBOARD_ShouldDrawBoard( ))
 		return;
 
-	bool bUseBigFont = false;
-	// [RC] Use a bolder display, at resolutions large enough.
-	if ( bScale )
-	{
-		if ( con_virtualwidth.GetGenericRep( CVAR_Int ).Int >= 640 )
-			bUseBigFont = true;
-	}
-	else
-	{
-		if ( SCREENWIDTH >= 640 )
-			bUseBigFont = true;
-	}
+	ULONG ulColor = ( g_ulPSNArtifactHoldTicks > 3 * TICRATE ) ? CR_GRAY : CR_RED;
 
-	if ( bScale )
-	{
-		screen->DrawText( bUseBigFont ? BigFont : SmallFont, ulColor,
-			(LONG)(( con_virtualwidth / 2 ) - ( SmallFont->StringWidth( szString ) / 2 )),
-			(LONG)( 25 * fYScale ),
-			szString,
-			DTA_VirtualWidth, ValWidth.Int,
-			DTA_VirtualHeight, ValHeight.Int,
-			TAG_DONE );
-	}
-	else
-	{
-		screen->DrawText( bUseBigFont ? BigFont : SmallFont, ulColor,
-			( SCREENWIDTH / 2 ) - ( SmallFont->StringWidth( szString ) / 2 ),
-			25,
-			szString,
-			TAG_DONE );
-	}
+	// [AK] Get how many minutes and seconds are left in the possession timer.
+	ULONG ulMinutesLeft = ( g_ulPSNArtifactHoldTicks + TICRATE ) / ( TICRATE * 60 );
+	ULONG ulSecondsLeft = (( g_ulPSNArtifactHoldTicks + TICRATE ) - ( ulMinutesLeft * ( TICRATE * 60 ))) / TICRATE;
+
+	FString text;
+	text.Format( "%02d:%02d", static_cast<unsigned int>( ulMinutesLeft ), static_cast<unsigned int>( ulSecondsLeft ));
+
+	// [RC] Use a bolder display, at resolutions large enough.
+	bool bUseBigFont = HUD_GetWidth( ) >= 640;
+	HUD_DrawTextCentered( bUseBigFont ? BigFont : SmallFont, ulColor, static_cast<LONG>( 25 * ( g_bScale ? g_fYScale : 1.0f )), text, g_bScale );
 }
 
 //*****************************************************************************
@@ -383,7 +341,6 @@ void POSSESSION_StartNextRoundCountdown( ULONG ulTicks )
 //
 void POSSESSION_DoFight( void )
 {
-	DHUDMessageFadeOut	*pMsg;
 	AActor				*pActor;
 
 	// The match is now in progress.
@@ -412,20 +369,8 @@ void POSSESSION_DoFight( void )
 		// Play fight sound.
 		ANNOUNCER_PlayEntry( cl_announcer, "Fight" );
 
-		// [EP] Clear all the HUD messages.
-		StatusBar->DetachAllMessages();
-
 		// Display "FIGHT!" HUD message.
-		pMsg = new DHUDMessageFadeOut( BigFont, "FIGHT!",
-			160.4f,
-			75.0f,
-			320,
-			200,
-			CR_RED,
-			2.0f,
-			1.0f );
-
-		StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
+		HUD_DrawStandardMessage( "FIGHT!", CR_RED, true, 2.0f, 1.0f );
 	}
 	// Display a little thing in the server window so servers can know when matches begin.
 	else
@@ -484,7 +429,7 @@ void POSSESSION_DoFight( void )
 		GAME_SpawnPossessionArtifact( );
 	}
 
-	SCOREBOARD_RefreshHUD( );
+	HUD_ShouldRefreshBeforeRendering( );
 }
 
 //*****************************************************************************
@@ -508,14 +453,14 @@ void POSSESSION_ScorePossessionPoint( player_t *pPlayer )
 
 	// If the player's on a team in team possession mode, give the player's point a team.
 	if ( teampossession && pPlayer->bOnTeam )
-		TEAM_SetScore( pPlayer->ulTeam, TEAM_GetScore( pPlayer->ulTeam ) + 1, true );
+		TEAM_SetPointCount( pPlayer->Team, TEAM_GetPointCount( pPlayer->Team ) + 1, true );
 
 	// Refresh the HUD since there's bound to be changes.
-	SCOREBOARD_RefreshHUD( );
+	HUD_ShouldRefreshBeforeRendering( );
 
 	// Determine if the pointlimit has been reached.
 	if (( teampossession ) && ( pPlayer->bOnTeam ))
-		bPointLimitReached = ( pointlimit && ( TEAM_GetScore( pPlayer->ulTeam ) >= pointlimit ));
+		bPointLimitReached = ( pointlimit && ( TEAM_GetPointCount( pPlayer->Team ) >= pointlimit ));
 	else
 		bPointLimitReached = ( pointlimit && ( pPlayer->lPointCount >= pointlimit ));
 
@@ -535,8 +480,6 @@ void POSSESSION_ScorePossessionPoint( player_t *pPlayer )
 //
 void POSSESSION_ArtifactPickedUp( player_t *pPlayer, ULONG ulTicks )
 {
-	DHUDMessageFadeOut	*pMsg;
-
 	// If we're just waiting for players, or counting down, don't bother doing
 	// anything.
 	if (( g_PSNState == PSNS_WAITINGFORPLAYERS ) ||
@@ -563,17 +506,7 @@ void POSSESSION_ArtifactPickedUp( player_t *pPlayer, ULONG ulTicks )
 	// Print out a HUD message indicating that the possession artifact has been picked
 	// up.
 	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-	{
-		pMsg = new DHUDMessageFadeOut( BigFont, GStrings( "POSSESSIONARTIFACT_PICKEDUP" ),
-			1.5f,
-			TEAM_MESSAGE_Y_AXIS,
-			0,
-			0,
-			CR_RED,
-			3.0f,
-			0.25f );
-		StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
-	}
+		HUD_DrawCNTRMessage( GStrings( "POSSESSIONARTIFACT_PICKEDUP" ), CR_RED );
 
 	// Also, announce that the artifact has been picked up.
 	ANNOUNCER_PlayEntry( cl_announcer, "PossessionArtifactPickedUp" );
@@ -588,8 +521,6 @@ void POSSESSION_ArtifactPickedUp( player_t *pPlayer, ULONG ulTicks )
 //
 void POSSESSION_ArtifactDropped( void )
 {
-	DHUDMessageFadeOut	*pMsg;
-
 	// If we're just waiting for players, or counting down, don't bother doing
 	// anything.
 	if (( g_PSNState == PSNS_WAITINGFORPLAYERS ) ||
@@ -609,17 +540,7 @@ void POSSESSION_ArtifactDropped( void )
 	// Print out a HUD message indicating that the possession artifact has been picked
 	// up.
 	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-	{
-		pMsg = new DHUDMessageFadeOut( BigFont, GStrings( "POSSESSIONARTIFACT_DROPPED" ),
-			1.5f,
-			TEAM_MESSAGE_Y_AXIS,
-			0,
-			0,
-			CR_RED,
-			3.0f,
-			0.25f );
-		StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
-	}
+		HUD_DrawCNTRMessage( GStrings( "POSSESSIONARTIFACT_DROPPED" ), CR_RED );
 
 	// Also, announce that the artifact has been dropped.
 	ANNOUNCER_PlayEntry( cl_announcer, "PossessionArtifactDropped" );
@@ -644,8 +565,6 @@ bool POSSESSION_ShouldRespawnArtifact( void )
 //
 void POSSESSION_TimeExpired( void )
 {
-	char				szString[64];
-
 	// Don't end the level if we're not playing.
 	if (( POSSESSION_GetState( ) == PSNS_WAITINGFORPLAYERS ) ||
 		( POSSESSION_GetState( ) == PSNS_COUNTDOWN ) ||
@@ -660,12 +579,8 @@ void POSSESSION_TimeExpired( void )
 	if ( g_pPossessionArtifactCarrier == NULL )
 	{
 		// Only print the message the instant we reach sudden death.
-		if ( level.time == (int)( timelimit * TICRATE * 60 ))
-		{
-			sprintf( szString, "\\cdSUDDEN DEATH!" );
-			V_ColorizeString( szString );
-			GAMEMODE_DisplayStandardMessage ( szString, true );
-		}
+		if ( level.time == static_cast<int>( timelimit * TICRATE * 60 ))
+			HUD_DrawStandardMessage( "SUDDEN DEATH!", CR_GREEN, false, 3.0f, 2.0f, true );
 
 		return;
 	}
@@ -681,7 +596,7 @@ void POSSESSION_TimeExpired( void )
 
 	// If the player's on a team in team possession mode, give the player's point a team.
 	if ( teampossession && g_pPossessionArtifactCarrier->bOnTeam )
-		TEAM_SetScore( g_pPossessionArtifactCarrier->ulTeam, TEAM_GetScore( g_pPossessionArtifactCarrier->ulTeam ) + 1, true );
+		TEAM_SetPointCount( g_pPossessionArtifactCarrier->Team, TEAM_GetPointCount( g_pPossessionArtifactCarrier->Team ) + 1, true );
 
 	NETWORK_Printf( "%s\n", GStrings( "TXT_TIMELIMIT" ));
 	GAME_SetEndLevelDelay( 5 * TICRATE );
@@ -713,6 +628,10 @@ PSNSTATE_e POSSESSION_GetState( void )
 //
 void POSSESSION_SetState( PSNSTATE_e State )
 {
+	// [AK] Try clearing the winner's name and score from the scoreboard, but
+	// only after the end of a round.
+	SCOREBOARD_TryClearingWinnerAndScore( true );
+
 	g_PSNState = State;
 
 	// Tell clients about the state change.
@@ -744,77 +663,51 @@ void POSSESSION_SetArtifactHoldTicks( ULONG ulTicks )
 //
 void possession_DisplayScoreInfo( ULONG ulPlayer )
 {
-	char				szString[64];
-	char				szScorer[64];
-	bool				bPointLimitReached;
-	DHUDMessageFadeOut	*pMsg;
+	FString message;
+	bool bPointLimitReached;
 
 	if ( ulPlayer >= MAXPLAYERS )
 		return;
 
 	// First, determine if the pointlimit has been reached.
 	if (( teampossession ) && ( players[ulPlayer].bOnTeam ))
-		bPointLimitReached = ( pointlimit && ( TEAM_GetScore( players[ulPlayer].ulTeam ) >= pointlimit ));
+		bPointLimitReached = ( pointlimit && ( TEAM_GetPointCount( players[ulPlayer].Team ) >= pointlimit ));
 	else
 		bPointLimitReached = ( pointlimit && ( players[ulPlayer].lPointCount >= pointlimit ));
+
+	message = bPointLimitReached ? " WINS!" : " SCORES!";
 
 	// Build the string that's displayed in big letters in the center of the screen.
 	// [RC] On team possession, state who scored.
 	if ( teampossession && ( players[ulPlayer].bOnTeam ))
 	{
-		sprintf( szString, "\\c%c%s %s!", V_GetColorChar( TEAM_GetTextColor( players[ulPlayer].ulTeam )), TEAM_GetName( players[ulPlayer].ulTeam ) ,bPointLimitReached ? "WINS" : "SCORES" );
-		sprintf( szScorer, "\\c%cScored by: %s", V_GetColorChar( TEAM_GetTextColor( players[ulPlayer].ulTeam )), players[ulPlayer].userinfo.GetName() );
+		EColorRange color = static_cast<EColorRange>( TEAM_GetTextColor( players[ulPlayer].Team ));
+		message.Insert( 0, TEAM_GetName( players[ulPlayer].Team ));
+		HUD_DrawStandardMessage( message, color, false, 3.0f, 2.0f, true );
 
-		// [BB] I don't see why we should remove the player name's color codes here. It's not done in CTF either
-		// and the player's team is apparent from the rest of the message.
-		//V_RemoveColorCodes( szScorer );
-		V_ColorizeString( szScorer );
-	}
-	else
-		sprintf( szString, "%s \\c-%s!", players[ulPlayer].userinfo.GetName(), bPointLimitReached ? "WINS" : "SCORES" );
-	V_ColorizeString( szString );
+		message.Format( "Scored by: %s", players[ulPlayer].userinfo.GetName( ));
 
-	// Print out the HUD message that displays who scored/won. If we're the server, just
-	// send the parameters to the client.
-	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-	{
-		// Display "%s WINS!" HUD message.
-		pMsg = new DHUDMessageFadeOut( BigFont, szString,
-			160.4f,
-			75.0f,
-			320,
-			200,
-			CR_RED,
-			3.0f,
-			2.0f );
-
-		StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
-
-		// [RC] Display small HUD message for the scorer
-		if ( teampossession && ( players[ulPlayer].bOnTeam ))
+		// [RC] Display small HUD message for the scorer.
+		if ( NETWORK_GetState( ) != NETSTATE_SERVER )
 		{
-			pMsg = new DHUDMessageFadeOut( SmallFont, szScorer,
-					160.4f,
-					90.0f,
-					320,
-					200,
-					CR_RED,
-					3.0f,
-					2.0f );
-			StatusBar->AttachMessage( pMsg, MAKE_ID('S','U','B','S') );
+			DHUDMessageFadeOut *pMsg = new DHUDMessageFadeOut( SmallFont, message, 160.4f, 90.0f, 320, 200, color, 3.0f, 2.0f );
+			StatusBar->AttachMessage( pMsg, MAKE_ID( 'S', 'U', 'B', 'S' ));
 		}
+		else
+		{
+			SERVERCOMMANDS_PrintHUDMessage( message, 160.4f, 90.0f, 320, 200, HUDMESSAGETYPE_FADEOUT, color, 3.0f, 0.0f, 2.0f, "SmallFont", MAKE_ID( 'S', 'U', 'B', 'S' ));
+ 		}
 	}
 	else
 	{
-		SERVERCOMMANDS_PrintHUDMessageFadeOut( szString, 160.4f, 75.0f, 320, 200, CR_RED, 3.0f, 2.0f, "BigFont", false, MAKE_ID('C','N','T','R') );
-		if ( teampossession && ( players[ulPlayer].bOnTeam ))
-			SERVERCOMMANDS_PrintHUDMessageFadeOut( szScorer, 160.4f, 90.0f, 320, 200, CR_RED, 3.0f, 2.0f, "SmallFont", false, MAKE_ID('S','U','B','S') );
+		message.Insert( 0, players[ulPlayer].userinfo.GetName( ));
+		HUD_DrawStandardMessage( message, CR_RED, false, 3.0f, 2.0f, true );
 	}
 }
 
 //*****************************************************************************
 //	CONSOLE COMMANDS/VARIABLES
 
-CVAR( Int, sv_possessioncountdowntime, 10, CVAR_ARCHIVE );
-CVAR( Int, sv_possessionholdtime, 30, CVAR_ARCHIVE );
-CVAR( Bool, sv_usemapsettingspossessionholdtime, true, CVAR_ARCHIVE );
+CVAR( Int, sv_possessioncountdowntime, 10, CVAR_ARCHIVE | CVAR_GAMEPLAYSETTING );
+CVAR( Int, sv_possessionholdtime, 30, CVAR_ARCHIVE | CVAR_GAMEPLAYSETTING );
+CVAR( Bool, sv_usemapsettingspossessionholdtime, true, CVAR_ARCHIVE | CVAR_GAMEPLAYSETTING );

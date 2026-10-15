@@ -97,6 +97,10 @@ void AFastProjectile::Tick ()
 						}
 					}
 
+					// [AK] Potentially reward the player who shot this missile with an accuracy/precision medal.
+					if (( STFlags & STFL_EXPLODEONDEATH ) == false )
+						PLAYER_CheckStruckPlayer( target );
+
 					P_ExplodeMissile (this, BlockingLine, BlockingMobj);
 					return;
 				}
@@ -115,6 +119,10 @@ void AFastProjectile::Tick ()
 					return;
 				}
 
+				// [AK] Potentially reward the player who shot this missile with an accuracy/precision medal.
+				if (( STFlags & STFL_EXPLODEONDEATH ) == false )
+					PLAYER_CheckStruckPlayer( target );
+
 				z = floorz;
 				P_HitFloor (this);
 				P_ExplodeMissile (this, NULL, NULL);
@@ -128,6 +136,10 @@ void AFastProjectile::Tick ()
 					Destroy ();
 					return;
 				}
+
+				// [AK] Potentially reward the player who shot this missile with an accuracy/precision medal.
+				if (( STFlags & STFL_EXPLODEONDEATH ) == false )
+					PLAYER_CheckStruckPlayer( target );
 
 				z = ceilingz - height;
 				P_ExplodeMissile (this, NULL, NULL);
@@ -183,12 +195,12 @@ void AFastProjectile::Effect()
 					// [BB] Assume that the trail is just for decorative purposes and let the
 					// client spawn it on its own.
 					if ( NETWORK_InClientMode() )
-						act->ulNetworkFlags |= NETFL_CLIENTSIDEONLY;
+						act->NetworkFlags |= NETFL_CLIENTSIDEONLY;
 					// [BB] Since clients spawn these on their own, prevent the 
 					// server from printing warnings by marking this as SERVERSIDEONLY.
 					else if ( NETWORK_GetState( ) == NETSTATE_SERVER )
 					{
-						act->ulNetworkFlags |= NETFL_SERVERSIDEONLY;
+						act->NetworkFlags |= NETFL_SERVERSIDEONLY;
 						act->FreeNetID ();
 					}
 				}

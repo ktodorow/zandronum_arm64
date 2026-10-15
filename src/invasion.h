@@ -87,9 +87,8 @@ public:
 	void		Tick( void );
 	void		Serialize( FArchive &arc );
 
-	// [EP] TODO: remove the 'l' prefix from the name of the variables which aren't LONG anymore
-	int		lNextSpawnTick;
-	int		lNumLeftThisWave;
+	int		NextSpawnTick;
+	int		NumLeftThisWave;
 	bool	bIsBossMonster;
 };
 
@@ -108,9 +107,8 @@ public:
 	void		Serialize( FArchive &arc );
 	void		PickedUp( void );
 
-	// [EP] TODO: remove the 'l' prefix from the name of the variables which aren't LONG anymore
-	int		lNextSpawnTick;
-	int		lNumLeftThisWave;
+	int		NextSpawnTick;
+	int		NumLeftThisWave;
 };
 
 //*****************************************************************************
@@ -126,8 +124,7 @@ public:
 	void		Tick( void );
 	void		Serialize( FArchive &arc );
 
-	// [EP] TODO: remove the 'l' prefix from the name of the variable which isn't LONG anymore
-	int			lNextSpawnTick;
+	int			NextSpawnTick;
 };
 
 //*****************************************************************************
@@ -159,6 +156,8 @@ void	INVASION_SetNumArchVilesLeft( ULONG ulLeft );
 ULONG	INVASION_GetCurrentWave( void );
 void	INVASION_SetCurrentWave( ULONG ulWave );
 
+FString	INVASION_GetCurrentWaveString( void ); // [AK]
+
 bool	INVASION_GetIncreaseNumMonstersOnSpawn( void );
 void	INVASION_SetIncreaseNumMonstersOnSpawn( bool bIncrease );
 
@@ -173,5 +172,6 @@ bool	INVASION_IsMapThingInvasionSpot( const FMapThing *mthing );
 EXTERN_CVAR( Int, sv_invasioncountdowntime )
 EXTERN_CVAR( Int, wavelimit )
 EXTERN_CVAR( Bool, sv_usemapsettingswavelimit )
+EXTERN_CVAR( Bool, sv_respawninsurvivalinvasion )
 
 #endif	// __INVASION_H__

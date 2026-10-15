@@ -426,6 +426,9 @@ typedef struct
 	// Bot's player color (in form of a string).
 	char			szColor[16];
 
+	// Name of the color set this bot will use.
+	char			szColorSet[32];
+
 	// Male/female/it :)
 	char			szGender[16];
 
@@ -476,7 +479,7 @@ class CSkullBot
 
 public:
 	//*************************************************************************
-	CSkullBot( char *pszName, char *pszTeamName, ULONG ulPlayerNum );
+	CSkullBot( const char *pszName, const char *pszTeamName, ULONG ulPlayerNum );
 	~CSkullBot( );
 
 	// Used for saving the bot for savegames.
@@ -590,7 +593,7 @@ public:
 	bool			m_bSkillDecrease;
 
 	// What's the last medal we received?
-	ULONG			m_ulLastMedalReceived;
+	LONG			m_lLastMedalReceived;
 
 private:
 	//*************************************************************************
@@ -627,10 +630,11 @@ void		BOTS_Destruct( void );
 
 bool		BOTS_AddBotInfo( BOTINFO_s *pBotInfo );
 void		BOTS_ParseBotInfo( void );
-bool		BOTS_IsValidName( char *pszName );
+bool		BOTS_IsValidName( const char *pszName );
 ULONG		BOTS_FindFreePlayerSlot( void );
 void		BOTS_RemoveBot( ULONG usPlayerIdx, bool bExitMsg );
 void		BOTS_RemoveAllBots( bool bExitMsg );
+bool		BOTS_RemoveRandomBot( void );
 void		BOTS_ResetCyclesCounter( void );
 bool		BOTS_IsPathObstructed( fixed_t Distance, AActor *pSource );
 bool		BOTS_IsVisible( AActor *pActor1, AActor *pActor2 );
@@ -654,6 +658,7 @@ BOTSKILL_e		BOTINFO_GetPerception( ULONG ulIdx );
 char			*BOTINFO_GetFavoriteWeapon( ULONG ulIdx );
 char			*BOTINFO_GetClass( ULONG ulIdx );
 char			*BOTINFO_GetColor( ULONG ulIdx );
+char			*BOTINFO_GetColorSet( ULONG ulIdx );
 char			*BOTINFO_GetGender( ULONG ulIdx );
 char			*BOTINFO_GetSkin( ULONG ulIdx );
 ULONG			BOTINFO_GetRailgunColor( ULONG ulIdx );

@@ -251,6 +251,9 @@ struct secplane_t
 	fixed_t		unlaggedD[UNLAGGEDTICS];
 	fixed_t		restoreD;
 
+	// [AK] The old D of the plane before backtracing a player.
+	fixed_t		backtraceRestoreD;
+
 	// Returns < 0 : behind; == 0 : on; > 0 : in front
 	int PointOnSide (fixed_t x, fixed_t y, fixed_t z) const
 	{
@@ -839,8 +842,8 @@ struct sector_t
 	fixed_t				SavedFloorYScale;
 	fixed_t				SavedCeilingXScale;
 	fixed_t				SavedCeilingYScale;
-	fixed_t				SavedFloorAngle;
-	fixed_t				SavedCeilingAngle;
+	angle_t				SavedFloorAngle;
+	angle_t				SavedCeilingAngle;
 	fixed_t				SavedBaseFloorAngle;
 	fixed_t				SavedBaseFloorYOffset;
 	fixed_t				SavedBaseCeilingAngle;
@@ -900,6 +903,14 @@ struct side_t
 		FTextureID texture;
 		TObjPtr<DInterpolation> interpolation;
 		//int Light;
+
+		// [AK] Saved properties for when a map resets, or when we need to give updates
+		// to new clients connecting.
+		fixed_t SavedXOffset;
+		fixed_t SavedYOffset;
+		fixed_t SavedXScale;
+		fixed_t SavedYScale;
+		FTextureID SavedTexture;
 	};
 
 	sector_t*	sector;			// Sector the SideDef is facing.
@@ -913,12 +924,9 @@ struct side_t
 	BYTE		Flags;
 	int			Index;		// needed to access custom UDMF fields which are stored in loading order.
 
-	// [BC] Saved properties for when a map resets, or when we need to give updates
+	// [BC] Saved flags for when a map resets, or when we need to give updates
 	// to new clients connecting.
 	BYTE		SavedFlags;
-	FTextureID	SavedTopTexture;
-	FTextureID	SavedMidTexture;
-	FTextureID	SavedBottomTexture;
 
 	int GetLightLevel (bool foggy, int baselight, bool noabsolute=false, int *pfakecontrast_usedbygzdoom=NULL) const;
 
@@ -1061,8 +1069,7 @@ struct line_t
 	int 		validcount;	// if == validcount, already checked
 	int			locknumber;	// [Dusk] lock number for special
 	// [BC] Have any of this line's textures been changed during the course of the level?
-	// [EP] TODO: remove the 'ul' prefix from this variable, it isn't ULONG anymore
-	unsigned int ulTexChangeFlags;
+	unsigned int TexChangeFlags;
 
 	// [BC] Saved properties for when a map resets, or when we need to give updates
 	// to new clients connecting.

@@ -186,6 +186,8 @@ ACTOR Actor native //: Thinker
 	action native A_FireAssaultGun();
 	action native A_CheckTerrain();
 	action native A_FaceConsolePlayer(float MaxTurnAngle = 0); // [Dusk]
+	action native A_ClientsideACSExecute(string script, int arg1=0, int arg2=0, int arg3=0, int arg4=0); // [JM]
+	action native A_GivePlayerMedal(name medal, bool silent, int giveto = AAPTR_DEFAULT); // [AK]
 
 	action native A_MissileAttack();
 	action native A_MeleeAttack();
@@ -303,6 +305,10 @@ ACTOR Actor native //: Thinker
 	action native A_SetTics(int tics);
 	action native A_SetDamageType(name damagetype);
 	action native A_DropItem(class<Actor> item, int dropamount = -1, int chance = 256);
+	action native A_GiveToChildren(class<Inventory> itemtype, int amount = 0);
+	action native A_GiveToSiblings(class<Inventory> itemtype, int amount = 0);
+	action native A_TakeFromChildren(class<Inventory> itemtype, int amount = 0);
+	action native A_TakeFromSiblings(class<Inventory> itemtype, int amount = 0);
 
 	action native A_CheckSightOrRange(float distance, state label);
 	action native A_CheckRange(float distance, state label);

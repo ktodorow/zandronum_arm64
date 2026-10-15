@@ -66,6 +66,7 @@
 #include "gamemode.h"
 #include "team.h"
 #include "menu/menu.h"
+#include "voicechat.h"
 
 static FRandom pr_pickteam ("PickRandomTeam");
 
@@ -75,9 +76,8 @@ EXTERN_CVAR (Bool, teamplay)
 CVAR (Float,	autoaim,				5000.f,		CVAR_USERINFO | CVAR_ARCHIVE);
 CVAR (String,	name,					"Player",	CVAR_USERINFO | CVAR_ARCHIVE);
 CVAR (Color,	color,					0x40cf00,	CVAR_USERINFO | CVAR_ARCHIVE);
-// [BB] For now Zandronum doesn't let the player use the color sets.
-const int colorset = -1;
-//CVAR (Int,		colorset,				0,			CVAR_USERINFO | CVAR_ARCHIVE);
+// [AK] Changed the default value of "colorset" to -1, so custom colors are used by default.
+CVAR (Int,		colorset,				-1,			CVAR_USERINFO | CVAR_ARCHIVE);
 CVAR (String,	skin,					"base",		CVAR_USERINFO | CVAR_ARCHIVE);
 // [BC] "team" is no longer a cvar.
 //CVAR (Int,		team,					TEAM_NONE,	CVAR_USERINFO | CVAR_ARCHIVE);
@@ -98,11 +98,17 @@ CVAR (Flag, 	cl_respawnonfire, 			cl_clientflags, CLIENTFLAGS_RESPAWNONFIRE );
 // [CK] Unlagged settings where we can choose ping unlagged.
 CVAR (Flag,		cl_ping_unlagged,			cl_clientflags, CLIENTFLAGS_PING_UNLAGGED );
 // [BB] Let the user control how often the server sends updated player positions to him.
-CVAR (Int,		cl_ticsperupdate,			3,		CVAR_USERINFO | CVAR_ARCHIVE);
+CVAR (Int,		cl_ticsperupdate,			1,		CVAR_USERINFO | CVAR_ARCHIVE);
 // [BB] Let the user control specify his connection speed (higher is faster).
 CVAR (Int,		cl_connectiontype,			1,		CVAR_USERINFO | CVAR_ARCHIVE);
 // [CK] Let the user control if they want clientside puffs or not.
 CVAR (Flag,		cl_clientsidepuffs,			cl_clientflags, CLIENTFLAGS_CLIENTSIDEPUFFS );
+// [AK] Let the user decide whether voice chat is on/off and how to transmit audio.
+CVAR (Int,		voice_enable,				VOICEMODE_PUSHTOTALK,	CVAR_ARCHIVE | CVAR_NOSETBYACS | CVAR_USERINFO);
+// [AK] Determines what kind of players the client can receive VoIP packets from.
+CVAR (Int,		voice_listenfilter,			VOICEFILTER_EVERYONE,	CVAR_NOSETBYACS | CVAR_USERINFO);
+// [AK] Determines what kind of players the client can send VoIP packets to.
+CVAR (Int,		voice_transmitfilter,		VOICEFILTER_EVERYONE,	CVAR_NOSETBYACS | CVAR_USERINFO);
 
 // [TP] Userinfo changes yet to be sent.
 static UserInfoChanges PendingUserinfoChanges;
@@ -169,6 +175,10 @@ bool D_ShouldOverridePlayerColors()
 	if ( NETWORK_GetState() == NETSTATE_SERVER )
 		return false;
 
+	// [AK] If sv_dontoverrideplayercolors is enabled, then we obviously can't override.
+	if ( zadmflags & ZADF_DONT_OVERRIDE_PLAYER_COLORS )
+		return false;
+
 	bool withteams = !!( GAMEMODE_GetCurrentFlags() & GMF_PLAYERSONTEAMS );
 
 	switch ( OverridePlayerColorsValue ( (int) cl_overrideplayercolors ))
@@ -209,6 +219,8 @@ void D_UpdatePlayerColors( ULONG ulPlayer )
 // [BB] Two variables to keep track of client side name changes.
 static	ULONG	g_ulLastNameChangeTime = 0;
 static	FString g_oldPlayerName;
+// [AK] A toggle boolean variable to prevent sending another userinfo change if we revert the player's name.
+static	bool	g_bDontSendNameChange = false;
 
 enum
 {
@@ -366,23 +378,21 @@ void D_GetPlayerColor (int player, float *h, float *s, float *v, FPlayerColorSet
 		colorset = NULL;
 	}
 */
-	if (set != NULL)
-	{
-		*set = colorset;
-	}
-
 	if ( GAMEMODE_GetCurrentFlags() & GMF_PLAYERSONTEAMS )
 	{
-		if ( players[player].bOnTeam && ( TEAM_IsCustomPlayerColorAllowed ( players[player].ulTeam ) == false ) )
+		if ( players[player].bOnTeam && ( TEAM_IsCustomPlayerColorAllowed ( players[player].Team ) == false ) )
 		{
 			int			nColor;
 
 			// Get the color string from the team object.
-			nColor = TEAM_GetColor( players[player].ulTeam );
+			nColor = TEAM_GetColor( players[player].Team );
 
 			// Convert.
 			RGBtoHSV( RPART( nColor ) / 255.f, GPART( nColor ) / 255.f, BPART( nColor ) / 255.f,
 				h, s, v );
+
+			// [AK] Make sure we're not using the color set anymore.
+			colorset = NULL;
 		}
 	}
 
@@ -397,6 +407,14 @@ void D_GetPlayerColor (int player, float *h, float *s, float *v, FPlayerColorSet
 		bool isally = players[cameraplayer].mo->IsTeammate( players[player].mo );
 		int color = isally ? cl_allycolor : cl_enemycolor;
 		RGBtoHSV( RPART( color ) / 255.f, GPART( color ) / 255.f, BPART( color ) / 255.f, h, s, v );
+
+		// [AK] Make sure we're not using the color set anymore.
+		colorset = NULL;
+	}
+
+	if (set != NULL)
+	{
+		*set = colorset;
 	}
 }
 
@@ -552,7 +570,7 @@ int D_GetFragCount (player_t *player)
 	}
 	else
 	{
-		return ( TEAM_GetFragCount( player->ulTeam ));
+		return ( TEAM_GetFragCount( player->Team ));
 	}
 }
 
@@ -605,6 +623,9 @@ void D_SetupUserInfo ()
 			case NAME_CL_TicsPerUpdate:		coninfo->TicsPerUpdateChanged(cl_ticsperupdate); break;
 			case NAME_CL_ConnectionType:	coninfo->ConnectionTypeChanged(cl_connectiontype); break;
 			case NAME_CL_ClientFlags:		coninfo->ClientFlagsChanged(cl_clientflags); break;
+			case NAME_Voice_Enable:			coninfo->VoiceEnableChanged(voice_enable); break;
+			case NAME_Voice_ListenFilter:	coninfo->VoiceListenFilterChanged(voice_listenfilter); break;
+			case NAME_Voice_TransmitFilter:	coninfo->VoiceTransmitFilterChanged(voice_transmitfilter); break;
 
 			// The rest do.
 			default:
@@ -712,8 +733,7 @@ uint32 userinfo_t::ColorChanged(const char *colorname)
 	UCVarValue val;
 	val.String = const_cast<char *>(colorname);
 	color->SetGenericRep(val, CVAR_String);
-	// [BB] For now Zandronum doesn't let the player use the color sets.
-	//*static_cast<FIntCVar *>((*this)[NAME_ColorSet]) = -1;
+	*static_cast<FIntCVar *>((*this)[NAME_ColorSet]) = -1;
 	return *color;
 }
 
@@ -732,10 +752,7 @@ uint32 userinfo_t::ColorChanged(uint32 colorval)
 void userinfo_t::NameChanged(const char *name)
 {
 	FString cleanedName = name;
-	// [BB] Don't allow the CVAR to be longer than MAXPLAYERNAME, userinfo_t::netname
-	// can't be longer anyway. Note: The length limit needs to be applied in colorized form.
-	cleanedName = cleanedName.Left(MAXPLAYERNAME);
-	V_CleanPlayerName ( cleanedName );
+	V_CleanPlayerName ( cleanedName, false );
 	*static_cast<FStringCVar *>((*this)[NAME_Name]) = cleanedName;
 }
 
@@ -819,6 +836,42 @@ int userinfo_t::ClientFlagsChanged(int flags)
 	return flags;
 }
 
+// [AK]
+int userinfo_t::VoiceEnableChanged(int voiceenable)
+{
+	if ( (*this)[NAME_Voice_Enable] == nullptr )
+	{
+		Printf( "Error: No Voice_Enable key found!\n" );
+		return 0;
+	}
+	*static_cast<FIntCVar *>((*this)[NAME_Voice_Enable]) = voiceenable;
+	return voiceenable;
+}
+
+// [AK]
+int userinfo_t::VoiceListenFilterChanged(int listenfilter)
+{
+	if ( (*this)[NAME_Voice_ListenFilter] == nullptr )
+	{
+		Printf( "Error: No Voice_ListenFilter key found!\n" );
+		return 0;
+	}
+	*static_cast<FIntCVar *>((*this)[NAME_Voice_ListenFilter]) = listenfilter;
+	return listenfilter;
+}
+
+// [AK]
+int userinfo_t::VoiceTransmitFilterChanged(int transmitfilter)
+{
+	if ( (*this)[NAME_Voice_TransmitFilter] == nullptr )
+	{
+		Printf( "Error: No Voice_TransmitFilter key found!\n" );
+		return 0;
+	}
+	*static_cast<FIntCVar *>((*this)[NAME_Voice_TransmitFilter]) = transmitfilter;
+	return transmitfilter;
+}
+
 void D_UserInfoChanged (FBaseCVar *cvar)
 {
 	UCVarValue val;
@@ -851,10 +904,7 @@ void D_UserInfoChanged (FBaseCVar *cvar)
 		// To clean the name, we first convert the color codes, clean the name and
 		// then restore the color codes again.
 		V_ColorizeString ( cleanedName );
-		// [BB] Don't allow the CVAR to be longer than MAXPLAYERNAME, userinfo_t::netname
-		// can't be longer anyway. Note: The length limit needs to be applied in colorized form.
-		cleanedName = cleanedName.Left(MAXPLAYERNAME);
-		V_CleanPlayerName ( cleanedName );
+		V_CleanPlayerName ( cleanedName, true );		
 		V_UnColorizeString ( cleanedName );
 		// [BB] The name needed to be cleaned. Update the CVAR name with the cleaned
 		// string and return (updating the name calls D_UserInfoChanged again).
@@ -930,6 +980,32 @@ void D_UserInfoChanged (FBaseCVar *cvar)
 			return;
 		}
 	}
+	// [AK]
+	else if ( cvar == &voice_enable )
+	{
+		val = cvar->GetGenericRep( CVAR_Int );
+		const int clampedValue = clamp<int>( val.Int, VOICEMODE_OFF, VOICEMODE_VOICEACTIVITY );
+
+		if ( val.Int != clampedValue )
+		{
+			val.Int = clampedValue;
+			cvar->SetGenericRep( val, CVAR_Int );
+			return;
+		}
+	}
+	// [AK]
+	else if (( cvar == &voice_listenfilter ) || ( cvar == &voice_transmitfilter ))
+	{
+		val = cvar->GetGenericRep( CVAR_Int );
+		const int clampedValue = clamp<int>( val.Int, VOICEFILTER_EVERYONE, VOICEFILTER_PLAYERS_OR_SPECTATORS_ONLY );
+
+		if ( val.Int != clampedValue )
+		{
+			val.Int = clampedValue;
+			cvar->SetGenericRep( val, CVAR_Int );
+			return;
+		}
+	}
 
 	val = cvar->GetGenericRep (CVAR_String);
 	escaped_val = D_EscapeUserInfo(val.String);
@@ -987,9 +1063,10 @@ static bool IsValidNameChange()
 		// [TP] Made conditional with sv_limitcommands
 		else if ( sv_limitcommands
 			&& ( g_ulLastNameChangeTime > 0 )
-			&& ( (ULONG)gametic < ( g_ulLastNameChangeTime + ( TICRATE * 30 ))))
+			&& ( (ULONG)gametic < ( g_ulLastNameChangeTime + ( TICRATE * CLIENT_NAMECHANGE_WAITTIME ))))
 		{
-			Printf( "You must wait at least 30 seconds before changing your name again.\n" );
+			// [AK] Show the client how many more seconds they need to wait before they can change their name again.
+			Printf( "You must wait %d seconds before changing your name again.\n", static_cast<int>(CLIENT_NAMECHANGE_WAITTIME - ( gametic - g_ulLastNameChangeTime ) / TICRATE) );
 			return false;
 		}
 	}
@@ -1008,16 +1085,30 @@ void D_SendPendingUserinfoChanges()
 		// name change and remove it from the list of things to send.
 		UserInfoChanges::iterator namePosition = PendingUserinfoChanges.find( NAME_Name );
 
-		if (( namePosition != PendingUserinfoChanges.end() ) && ( IsValidNameChange() == false ))
+		if ( namePosition != PendingUserinfoChanges.end() )
 		{
-			PendingUserinfoChanges.erase( namePosition );
-			name = g_oldPlayerName;
-		}
-		else
-		{
-			// [BB] The client made a valid name change, keep track of this.
-			g_ulLastNameChangeTime = gametic;
-			g_oldPlayerName = name;
+			if ( g_bDontSendNameChange )
+			{
+				// [AK] This is an unintended userinfo name change that should just be erased.
+				PendingUserinfoChanges.erase( namePosition );
+			}
+			else if ( IsValidNameChange() == false )
+			{
+				// [AK] Don't send another userinfo change while we're reverting the player's name.
+				g_bDontSendNameChange = true;
+
+				PendingUserinfoChanges.erase( namePosition );
+				name = g_oldPlayerName;
+
+				// [AK] We're okay to send name changes now.
+				g_bDontSendNameChange = false;
+			}
+			else
+			{
+				// [BB] The client made a valid name change, keep track of this.
+				g_ulLastNameChangeTime = gametic;
+				g_oldPlayerName = name;
+			}
 		}
 
 		CLIENTCOMMANDS_UserInfo( PendingUserinfoChanges );
@@ -1398,6 +1489,21 @@ void D_ReadUserInfoStrings (int pnum, BYTE **stream, bool update)
 				info->ClientFlagsChanged ( atoi( value ) );
 				break;
 
+			// [AK]
+			case NAME_Voice_Enable:
+				info->VoiceEnableChanged ( atoi( value ) );
+				break;
+
+			// [AK]
+			case NAME_Voice_ListenFilter:
+				info->VoiceListenFilterChanged ( atoi( value ) );
+				break;
+
+			// [AK]
+			case NAME_Voice_TransmitFilter:
+				info->VoiceTransmitFilterChanged ( atoi( value ) );
+				break;
+
 			default:
 				cvar_ptr = info->CheckKey(keyname);
 				if (cvar_ptr != NULL)
@@ -1437,7 +1543,7 @@ void D_ReadUserInfoStrings (int pnum, BYTE **stream, bool update)
 
 void ReadCompatibleUserInfo(FArchive &arc, userinfo_t &info)
 {
-	char netname[MAXPLAYERNAME + 1];
+	char netname[MAXPLAYERNAMEBUFFER + 1];
 	BYTE team;
 	int aimdist, color, colorset, skin, gender;
 	bool neverswitch;
@@ -1456,8 +1562,7 @@ void ReadCompatibleUserInfo(FArchive &arc, userinfo_t &info)
 	*static_cast<FIntCVar *>(info[NAME_Gender]) = gender;
 	// [BB]
 	*static_cast<FIntCVar *>(info[NAME_SwitchOnPickup]) = switchonpickup;
-	// [BB] For now Zandronum doesn't let the player use the color sets.
-	//*static_cast<FIntCVar *>(info[NAME_ColorSet]) = colorset;
+	*static_cast<FIntCVar *>(info[NAME_ColorSet]) = colorset;
 
 	UCVarValue val;
 	val.Int = color;
@@ -1561,7 +1666,7 @@ CCMD (playerinfo)
 
 					// [K6/BB] Show the player's country, if the GeoIP db is available.
 					if ( NETWORK_IsGeoIPAvailable() )
-						infoString.AppendFormat ( TEXTCOLOR_BROWN " - FROM %s", NETWORK_GetCountryCodeFromAddress ( SERVER_GetClient( i )->Address ).GetChars() );
+						infoString.AppendFormat ( TEXTCOLOR_BROWN " - FROM %s", NETWORK_GetCountryCodeFromIndex ( players[i].ulCountryIndex, false ));
 				}
 
 				if ( PLAYER_IsTrueSpectator( &players[i] ))
@@ -1591,7 +1696,7 @@ CCMD (playerinfo)
 		// Print special info
 		Printf("%20s: %s\n",      "Name", ui->GetName());
 		// [BB] Zandronum still uses its own team code.
-		Printf("%20s: %s (%d)\n", "Team", players[i].bOnTeam ? TEAM_GetName( players[i].ulTeam ) : "NONE", static_cast<unsigned int> (players[i].ulTeam) );
+		Printf("%20s: %s (%d)\n", "Team", players[i].bOnTeam ? TEAM_GetName( players[i].Team ) : "NONE", players[i].Team );
 		Printf("%20s: %s (%d)\n", "Skin", skins[ui->GetSkin()].name, ui->GetSkin());
 		Printf("%20s: %s (%d)\n", "Gender", GenderNames[ui->GetGender()], ui->GetGender());
 		Printf("%20s: %s (%d)\n", "PlayerClass",

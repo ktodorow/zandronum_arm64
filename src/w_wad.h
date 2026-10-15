@@ -221,6 +221,7 @@ public:
 	int GetParentWad( int wadnum ) const;
 	bool IsWadOptional( int wadnum ) const;
 	void LumpIsMandatory( int lumpnum );
+	bool WadContainsAuthenticatedLumps( int wadnum ) const; // [SB]
 
 protected:
 
@@ -248,5 +249,9 @@ private:
 };
 
 extern FWadCollection Wads;
+
+// [AK] A list of all duplicate lumps found during startup.
+extern TArray<FString> DuplicateLumps;
+extern TArray<FString> DuplicateLumpFilenames;
 
 #endif

@@ -55,7 +55,6 @@
 #include "i_system.h"
 #include "network.h"
 #include "sc_man.h"
-#include "scoreboard.h"
 #include "team.h"
 #include "w_wad.h"
 
@@ -215,7 +214,7 @@ bool CAMPAIGN_DidPlayerBeatMap( void )
 		{
 			for ( ULONG i = 0; i < teams.Size( ); i++ )
 			{
-				if ( TEAM_GetFragCount( players[consoleplayer].ulTeam ) < TEAM_GetFragCount( i ))
+				if ( TEAM_GetFragCount( players[consoleplayer].Team ) < TEAM_GetFragCount( i ))
 					return ( false );
 			}
 		}
@@ -225,7 +224,7 @@ bool CAMPAIGN_DidPlayerBeatMap( void )
 		{
 			for ( ULONG i = 0; i < teams.Size( ); i++ )
 			{
-				if ( TEAM_GetScore( players[consoleplayer].ulTeam ) < TEAM_GetScore( i ))
+				if ( TEAM_GetPointCount( players[consoleplayer].Team ) < TEAM_GetPointCount( i ))
 					return ( false );
 			}
 		}
@@ -235,7 +234,7 @@ bool CAMPAIGN_DidPlayerBeatMap( void )
 		{
 			for ( ULONG i = 0; i < teams.Size( ); i++ )
 			{
-				if ( TEAM_GetWinCount( players[consoleplayer].ulTeam ) < TEAM_GetWinCount( i ))
+				if ( TEAM_GetWinCount( players[consoleplayer].Team ) < TEAM_GetWinCount( i ))
 					return ( false );
 			}
 		}
@@ -244,7 +243,7 @@ bool CAMPAIGN_DidPlayerBeatMap( void )
 	// If it's a deathmatch, check the player's spread.
 	else if ( deathmatch )
 	{
-		if ( SCOREBOARD_CalcSpread( consoleplayer ) < 0 )
+		if ( PLAYER_CalcSpread( consoleplayer ) < 0 )
 			return ( false );
 	}
 
@@ -315,6 +314,9 @@ static void campaign_ParseCampaignInfoLump( FScanner &sc )
 		pInfo->lDMFlags				= -1;
 		pInfo->lDMFlags2			= -1;
 		pInfo->lCompatFlags			= -1;
+		pInfo->lCompatFlags2		= -1;
+		pInfo->lZaDMFlags			= -1;
+		pInfo->lZaCompatFlags		= -1;
 		pInfo->szMapName[0]			= 0;
 		pInfo->PlayerTeamName		= "";
 		pInfo->bMustWinAllDuels		= true;
@@ -431,6 +433,18 @@ static void campaign_ParseCampaignInfoLump( FScanner &sc )
 			{
 				pInfo->lCompatFlags = atoi( szValue );
 			}
+			else if ( stricmp( szKey, "compatflags2" ) == 0 )
+			{
+				pInfo->lCompatFlags2 = atoi( szValue );
+			}
+			else if ( stricmp( szKey, "zadmflags" ) == 0 )
+			{
+				pInfo->lZaDMFlags = atoi( szValue );
+			}
+			else if ( stricmp( szKey, "zacompatflags" ) == 0 )
+			{
+				pInfo->lZaCompatFlags = atoi( szValue );
+			}
 			else if ( stricmp( szKey, "playerteam" ) == 0 )
 			{
 				pInfo->PlayerTeamName = szValue;
@@ -480,8 +494,7 @@ static void campaign_ParseCampaignInfoLump( FScanner &sc )
 				if (( lBotIndex < 0 ) || ( lBotIndex >= MAXPLAYERS ))
 					I_Error( "CAMPAIGN_ParseCampaignInfo: Invalid \"bot\" index, %d!", static_cast<int> (lBotIndex) );
 
-				strncpy( pInfo->BotSpawn[lBotIndex].szBotName, szValue, 31 );
-				pInfo->BotSpawn[lBotIndex].szBotName[31] = 0;
+				snprintf( pInfo->BotSpawn[lBotIndex].szBotName, sizeof( pInfo->BotSpawn[lBotIndex].szBotName ), "%s", szValue );
 			}
 			else
 				I_Error( "CAMPAIGN_ParseCampaignInfo: Unknown CMPGNINF property, \"%s\"!", szKey );

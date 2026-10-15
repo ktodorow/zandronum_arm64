@@ -1,5 +1,7 @@
 Command MapLoad
 	String mapName
+	# [AK] Also send the current position of the map rotation.
+	Short currentPosition
 EndCommand
 
 Command MapNew
@@ -9,6 +11,7 @@ EndCommand
 Command MapExit
 	Byte position
 	String nextMap
+	Long changeFlags
 EndCommand
 
 Command MapAuthenticate
@@ -20,28 +23,28 @@ Command SetMapTime
 EndCommand
 
 Command SetMapNumKilledMonsters
-	Short killedMonsters
+	Variable killedMonsters
 EndCommand
 
 Command SetMapNumFoundItems
-	Short foundItems
+	Variable foundItems
 EndCommand
 
 Command SetMapNumFoundSecrets
-	Short foundSecrets
+	Variable foundSecrets
 EndCommand
 
 Command SetMapNumTotalMonsters
-	Short totalMonsters
+	Variable totalMonsters
 EndCommand
 
 Command SetMapNumTotalItems
-	Short totalItems
+	Variable totalItems
 EndCommand
 
 Command SetMapNumTotalSecrets
 	ExtendedCommand
-	Short totalSecrets
+	Variable totalSecrets
 EndCommand
 
 Command SetMapMusic

@@ -526,10 +526,25 @@ void R_ProjectSprite (AActor *thing, int fakeside, F3DFloor *fakefloor, F3DFloor
 		return;
 	}
 
+	// [AK] Unless the sprite's in a horizontal mirror or the local player's using
+	// the chasecam, don't render icons above the heads of players being spied on.
+	// TODO: Use the ONLYVISIBLEINMIRRORS actor flag from GZDoom when we support it.
+	if (((MirrorFlags & RF_XFLIP) == false) && ((players[consoleplayer].cheats & CF_CHASECAM) == false))
+	{
+		if ((players[consoleplayer].camera != nullptr) && (players[consoleplayer].camera->player != nullptr))
+		{
+			if (thing == players[consoleplayer].camera->player->pIcon)
+				return;
+		}
+	}
+
 	// [RH] Interpolate the sprite's position to make it look smooth
-	fx = thing->PrevX + FixedMul (r_TicFrac, thing->x - thing->PrevX);
-	fy = thing->PrevY + FixedMul (r_TicFrac, thing->y - thing->PrevY);
-	fz = thing->PrevZ + FixedMul (r_TicFrac, thing->z - thing->PrevZ) + thing->GetBobOffset(r_TicFrac);
+	// [AK] Don't do this if the game is supposed to be paused but the console
+	// is still interpolated. Otherwise, any moving sprites will appear jittery.
+	const fixed_t ticFracToUse = C_ShouldForceInterpolation() ? FRACUNIT : r_TicFrac;
+	fx = thing->PrevX + FixedMul (ticFracToUse, thing->x - thing->PrevX);
+	fy = thing->PrevY + FixedMul (ticFracToUse, thing->y - thing->PrevY);
+	fz = thing->PrevZ + FixedMul (ticFracToUse, thing->z - thing->PrevZ) + thing->GetBobOffset(ticFracToUse);
 
 	// transform the origin point
 	tr_x = fx - viewx;
@@ -876,11 +891,11 @@ void R_ProjectSprite (AActor *thing, int fakeside, F3DFloor *fakefloor, F3DFloor
 	{ // fixed map
 		vis->Style.colormap = fixedcolormap;
 	}
-	// [BB] This makes sure that actors, which have lFixedColormap set, are renderes accordingly.
+	// [BB] This makes sure that actors, which have FixedColormap set, are renderes accordingly.
 	// For example a player using a doom sphere is rendered red for the other players.
-	else if ( ( thing->lFixedColormap != NOFIXEDCOLORMAP ) && ( thing->lFixedColormap >= 0 ) && ( unsigned ( thing->lFixedColormap ) < SpecialColormaps.Size() ) )
+	else if ( ( thing->FixedColormap != NOFIXEDCOLORMAP ) && ( thing->FixedColormap >= 0 ) && ( unsigned ( thing->FixedColormap ) < SpecialColormaps.Size() ) )
 	{
-		vis->Style.colormap = SpecialColormaps[ thing->lFixedColormap ].Colormap;
+		vis->Style.colormap = SpecialColormaps[ thing->FixedColormap ].Colormap;
 		vis->Style.bFixedColormap = true;
 	}
 	else

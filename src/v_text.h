@@ -75,6 +75,9 @@ struct FBrokenLines
 #define TEXTCOLOR_CHAT			"\034*"
 #define TEXTCOLOR_TEAMCHAT		"\034!"
 
+// [AK] New text color for private chat messages.
+#define TEXTCOLOR_PRIVATECHAT	"\034?"
+
 // [BC] New text functions.
 void	V_ApplyCharArrayFunctionToFString ( FString &String, void (*CharArrayFunction) ( char *pszString ) );
 void	V_ColorizeString( char *pszString );
@@ -83,7 +86,6 @@ void	V_UnColorizeString( FString &String );
 void	V_RemoveColorCodes( FString &String );
 void	V_RemoveColorCodes( char *pszString );
 void	V_StripColors( char *pszString );
-char	V_GetColorChar( ULONG ulColor );
 void	V_EscapeBacklashes( FString &String );
 void	V_RemoveTrailingCrap( char *pszString );
 void	V_RemoveTrailingCrapFromFString( FString &String );
@@ -93,8 +95,7 @@ void	V_RemoveInvalidColorCodes( FString &String );
 // [RC] Functions related to user name cleaning.
 bool	v_IsCharAcceptableInNames ( char c );
 bool	v_IsCharacterWhitespace ( char c );
-void	V_CleanPlayerName( char *pszString );
-void	V_CleanPlayerName( FString &String );
+void	V_CleanPlayerName( FString &String, bool bPrintWarning );
 
 FBrokenLines *V_BreakLines (FFont *font, int maxwidth, const BYTE *str);
 void V_FreeBrokenLines (FBrokenLines *lines);

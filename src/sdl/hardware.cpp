@@ -72,8 +72,7 @@ int currentrenderer=0;
 #endif
 
 // [ZDoomGL]
-// [BB] Changed default.
-CUSTOM_CVAR (Int, vid_renderer, 0, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
+CUSTOM_CVAR (Int, vid_renderer, 1, CVAR_ARCHIVE | CVAR_GLOBALCONFIG | CVAR_NOINITCALL)
 {
 	// 0: Software renderer
 	// 1: OpenGL renderer
@@ -116,13 +115,11 @@ void I_InitGraphics ()
 
 #ifndef NO_GL
 	// hack by stevenaaus to force software mode if no 32bpp
-	/*
 	const SDL_VideoInfo *i = SDL_GetVideoInfo();
 	if ((i->vfmt)->BytesPerPixel != 4) {
 		fprintf (stderr, "n32 bit colour not found, disabling OpenGL.n");
 		fprintf (stderr, "To enable OpenGL, restart X with 32 color (try 'startx -- :1 -depth 24'), and enable OpenGL in the Display Options.nn");
 	} 
-	*/	// PANDORA
 #endif
 	val.Bool = !!Args->CheckParm ("-devparm");
 	ticker.SetGenericRepDefault (val, CVAR_Bool);
@@ -169,11 +166,7 @@ void I_CreateRenderer()
 
 DFrameBuffer *I_SetMode (int &width, int &height, DFrameBuffer *old)
 {
-#ifdef PANDORA
-	bool fs = true;
-#else
 	bool fs = false;
-#endif
 	switch (Video->GetDisplayType ())
 	{
 	case DISPLAY_WindowOnly:
@@ -186,9 +179,6 @@ DFrameBuffer *I_SetMode (int &width, int &height, DFrameBuffer *old)
 		fs = fullscreen;
 		break;
 	}
-#ifdef PANDORA
-	if (width>800 || height>480) {width=800; height=480;};
-#endif
 	DFrameBuffer *res = Video->CreateFrameBuffer (width, height, fs, old);
 
 	/* Right now, CreateFrameBuffer cannot return NULL
@@ -341,18 +331,10 @@ CUSTOM_CVAR (Int, vid_maxfps, 200, CVAR_ARCHIVE | CVAR_GLOBALCONFIG)
 	}
 }
 
-#ifdef PANDORA
-#ifndef NO_GL
-CUSTOM_CVAR (Bool, fullscreen, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL)
-#else
-CUSTOM_CVAR (Bool, fullscreen, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
-#endif
-#else
 #ifndef NO_GL
 CUSTOM_CVAR (Bool, fullscreen, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL)
 #else
 CUSTOM_CVAR (Bool, fullscreen, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
-#endif
 #endif
 {
 	if ( screen )

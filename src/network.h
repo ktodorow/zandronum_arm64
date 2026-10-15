@@ -86,8 +86,13 @@ enum
 enum
 {
 	PLAYER_VISIBLE		= 1 << 0,
-	PLAYER_ATTACK			= 1 << 1,
+	PLAYER_ATTACK		= 1 << 1,
 	PLAYER_ALTATTACK	= 1 << 2,
+	PLAYER_CROUCHING	= 1 << 3,
+	PLAYER_SENDVELX		= 1 << 4,
+	PLAYER_SENDVELY		= 1 << 5,
+	PLAYER_SENDVELZ		= 1 << 6,
+	PLAYER_ONLIFT		= 1 << 7,
 };
 
 /* [BB] This is not used anywhere anymore.
@@ -148,11 +153,39 @@ enum PLAYERSTATE_e
 	STATE_PLAYER_ATTACK_ALTFIRE,
 };
 
-// HUD message types.
-#define	HUDMESSAGETYPE_NORMAL			1
-#define	HUDMESSAGETYPE_FADEOUT			2
-#define	HUDMESSAGETYPE_TYPEONFADEOUT	3
-#define	HUDMESSAGETYPE_FADEINOUT		4
+// [AK] HUD message types and flags.
+#define	HUDMESSAGETYPE_NORMAL			0
+#define	HUDMESSAGETYPE_FADEOUT			1
+#define	HUDMESSAGETYPE_TYPEONFADEOUT	2
+#define	HUDMESSAGETYPE_FADEINOUT		3
+
+#define HUDMESSAGETYPE_MASK				0x00000003
+// Was this a HUD message created using ACS?
+#define HUDMESSAGE_ACS					0x00000004
+// Should we send the HUD width and height?
+#define HUDMESSAGE_SEND_HUDSIZE			0x00000008
+// Should we send the clipping rectangle?
+#define HUDMESSAGE_SEND_CLIPRECT		0x00000010
+// Should we send the wrap width?
+#define HUDMESSAGE_SEND_WRAPWIDTH		0x00000020
+// Should we send the name of the font used?
+#define HUDMESSAGE_SEND_FONT			0x00000040
+
+// [AK] These are redefines of some the ACS HUD message flags. This is so all the flags
+// can be stored into a single short instead of sending a long.
+#define HUDMESSAGE_NET_ALPHA			0x00000080
+#define HUDMESSAGE_NET_NOWRAP			0x00000100
+#define HUDMESSAGE_NET_LOG				0x00000200
+#define HUDMESSAGE_NET_ADDBLEND			0x00000400
+
+// [AK] These are redefines of the ACS HUD message layer and visibility flags. This way,
+// everything can fit into a single short instead of sending a long.
+// Note that only two layer flags are sent, not three. This is because HUDMSG_LAYER_OVERHUD
+// is default and standard behaviour, and doesn't do anything, so we don't need to send it.
+#define HUDMESSAGE_NET_LAYERSHIFT		11
+#define HUDMESSAGE_NET_LAYERMASK		0x00001800
+#define HUDMESSAGE_NET_VISIBLESHIFT		13
+#define HUDMESSAGE_NET_VISIBLEMASK		0x0000E000
 
 // Different levels of network messages.
 #define	NETMSG_LITE		0
@@ -179,6 +212,38 @@ enum ActorScaleFlag
 	ACTORSCALE_Y = 2
 };
 
+enum SetPlayerStatusFlag
+{
+	SETPLAYERSTATUS_CLIENTSENDSUPDATE		= 1 << 0,
+	SETPLAYERSTATUS_SERVERCANTSENDUPDATE	= 1 << 1,
+};
+
+// [AK] What kind of translation are we sending to clients?
+enum CreateTranslationType
+{
+	CREATETRANSLATION_PALETTE,
+	CREATETRANSLATION_RGB,
+	CREATETRANSLATION_DESATURATED,
+};
+
+// [AK] If we're updating the map rotation then what exactly are we doing?
+enum UpdateMapRotationType
+{
+	UPDATE_MAPROTATION_ADDMAP,
+	UPDATE_MAPROTATION_DELMAP,
+	UPDATE_MAPROTATION_CLEAR,
+	UPDATE_MAPROTATION_RESET,
+	UPDATE_MAPROTATION_SETNEXTPOSITION,
+};
+
+// [AK] What kind of team score are we sending to clients?
+enum TeamScoreType
+{
+	TEAMSCORE_FRAGS,
+	TEAMSCORE_POINTS,
+	TEAMSCORE_WINS,
+};
+
 // Which actor sound is being updated?
 #define	ACTORSOUND_SEESOUND			1
 #define	ACTORSOUND_ATTACKSOUND		2
@@ -190,6 +255,9 @@ enum ActorScaleFlag
 // just send some key letter that identifies the actor, instead of the full name.
 #define NUMBER_OF_ACTOR_NAME_KEY_LETTERS	3
 #define NUMBER_OF_WEAPON_NAME_KEY_LETTERS	10
+
+// [AK] The country index that indicates a LAN connection.
+#define COUNTRYINDEX_LAN	UCHAR_MAX
 
 // [BB] 5 = 1 + 4 (SVC_HEADER + packet number)
 const int PACKET_HEADER_SIZE = 5;
@@ -213,6 +281,48 @@ enum
 };
 
 //*****************************************************************************
+//	CLASSES
+
+// [BB] Legacy interface that redirects all calls to Skulltag's old MD5 code to the ZDoom MD5 code.
+class CMD5Checksum
+{
+public:
+	static void GetMD5( const BYTE *pBuf, UINT nLength, FString &OutString );
+};
+
+//*****************************************************************************
+//	STRUCTURES
+
+// [AK] Buffer parameter type used by the network protocol.
+struct BufferParameter
+{
+public:
+	unsigned char *data;
+	unsigned short size;
+
+	BufferParameter( void ) : data( nullptr ), size( 0 ) { }
+	BufferParameter( unsigned char *_data, unsigned short _size ) : BufferParameter( ) { CopyData( _data, _size ); }
+	BufferParameter( const BufferParameter &other ) : BufferParameter( other.data, other.size ) { }
+	~BufferParameter( void ) { DeleteData( ); }
+
+	BufferParameter &operator() ( BYTESTREAM_s *byteStream );
+	BufferParameter &operator= ( const BufferParameter &other );
+
+private:
+	void DeleteData( void );
+	void CopyData( unsigned char *newData, unsigned short newSize );
+};
+
+//*****************************************************************************
+// [TP] Now a struct
+struct NetworkPWAD
+{
+	FString name;
+	FString checksum;
+	int wadnum; // [TP] Added wadnum
+};
+
+//*****************************************************************************
 //	VARIABLES
 
 extern FString g_lumpsAuthenticationChecksum;
@@ -233,18 +343,13 @@ NETADDRESS_s	NETWORK_GetCachedLocalAddress( void );
 NETBUFFER_s		*NETWORK_GetNetworkMessageBuffer( void );
 USHORT			NETWORK_ntohs( ULONG ul );
 bool			NETWORK_IsGeoIPAvailable( void );
-FString			NETWORK_GetCountryCodeFromAddress( NETADDRESS_s Address );
+ULONG			NETWORK_GetCountryIndexFromAddress( NETADDRESS_s Address );
+const char		*NETWORK_GetCountryCodeFromIndex( ULONG ulIndex, bool bGetAlpha3 );
+const char		*NETWORK_GetCountryNameFromIndex( ULONG ulIndex );
 USHORT			NETWORK_GetLocalPort( void );
 
-// [TP] Now a struct
-struct NetworkPWAD
-{
-	FString name;
-	FString checksum;
-	int wadnum; // [TP] Added wadnum
-};
-
 const TArray<NetworkPWAD>&	NETWORK_GetPWADList( void ); // [RC]
+const TArray<NetworkPWAD>&	NETWORK_GetAuthenticatedWADsList( void ); // [SB]
 const char		*NETWORK_GetIWAD( void );
 void			NETWORK_AddLumpForAuthentication( const LONG LumpNumber );
 void			NETWORK_GenerateLumpMD5Hash( const int LumpNum, FString &MD5Hash );
@@ -331,12 +436,5 @@ LONG NETWORK_GetFirstFreeID ( void )
 	Printf( "NETWORK_GetFirstFreeID: ID limit reached (>=8192)\n" );
 	return ( -1 );
 }
-
-// [BB] Legacy interface that redirects all calls to Skulltag's old MD5 code to the ZDoom MD5 code.
-class CMD5Checksum  
-{
-public:
-	static void GetMD5 ( const BYTE* pBuf, UINT nLength, FString &OutString );
-};
 
 #endif	// __NETWORK_H__

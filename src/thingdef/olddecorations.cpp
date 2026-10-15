@@ -448,7 +448,7 @@ static void ParseInsideDecoration (Baggage &bag, AActor *defaults,
 		else if (sc.Compare ("Alpha"))
 		{
 			sc.MustGetFloat ();
-			defaults->alpha = int(clamp ((float)sc.Float, 0.0f, 1.0f) * OPAQUE);
+			defaults->alpha = int(clamp (sc.Float, 0.0, 1.0) * OPAQUE);
 		}
 		else if (sc.Compare ("Scale"))
 		{

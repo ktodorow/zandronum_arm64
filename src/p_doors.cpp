@@ -73,7 +73,7 @@ void DDoor::Serialize (FArchive &arc)
 		<< m_TopCountdown
 		<< m_LightTag
 		// [BC]
-		<< m_lDoorID;
+		<< m_DoorID;
 }
 
 //============================================================================
@@ -118,7 +118,7 @@ void DDoor::Tick ()
 
 				// [BC] If we're the server, tell clients to change the door's direction.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_ChangeDoorDirection( m_lDoorID, m_Direction );
+					SERVERCOMMANDS_ChangeDoorDirection( m_DoorID, m_Direction );
 
 				break;
 				
@@ -128,7 +128,7 @@ void DDoor::Tick ()
 
 				// [BC] If we're the server, tell clients to change the door's direction.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_ChangeDoorDirection( m_lDoorID, m_Direction );
+					SERVERCOMMANDS_ChangeDoorDirection( m_DoorID, m_Direction );
 
 				break;
 				
@@ -158,7 +158,7 @@ void DDoor::Tick ()
 			
 				// [BC] If we're the server, tell clients to change the door's direction.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_ChangeDoorDirection( m_lDoorID, m_Direction );
+					SERVERCOMMANDS_ChangeDoorDirection( m_DoorID, m_Direction );
 
 				break;
 				
@@ -208,7 +208,7 @@ void DDoor::Tick ()
 
 				// [BC] If we're the server, tell clients to destroy the door.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_DestroyDoor( m_lDoorID );
+					SERVERCOMMANDS_DestroyDoor( m_DoorID );
 
 				Destroy ();						// unlink and free
 				break;
@@ -219,7 +219,7 @@ void DDoor::Tick ()
 
 				// [BC] If we're the server, tell clients to change the door's direction.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_ChangeDoorDirection( m_lDoorID, m_Direction );
+					SERVERCOMMANDS_ChangeDoorDirection( m_DoorID, m_Direction );
 
 				break;
 				
@@ -240,7 +240,7 @@ void DDoor::Tick ()
 
 				// [BC] If we're the server, tell clients to change the door's direction.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_ChangeDoorDirection( m_lDoorID, m_Direction );
+					SERVERCOMMANDS_ChangeDoorDirection( m_DoorID, m_Direction );
 
 				break;
 			}
@@ -287,7 +287,7 @@ void DDoor::Tick ()
 
 				// [BC] If we're the server, tell clients to change the door's direction.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_ChangeDoorDirection( m_lDoorID, m_Direction );
+					SERVERCOMMANDS_ChangeDoorDirection( m_DoorID, m_Direction );
 
 				break;
 				
@@ -297,7 +297,7 @@ void DDoor::Tick ()
 				
 				// [BC] If we're the server, tell clients to destroy the door.
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-					SERVERCOMMANDS_DestroyDoor( m_lDoorID );
+					SERVERCOMMANDS_DestroyDoor( m_DoorID );
 
 				Destroy ();						// unlink and free
 				break;
@@ -326,7 +326,7 @@ void DDoor::Tick ()
 
 void DDoor::UpdateToClient( ULONG ulClient )
 {
-	SERVERCOMMANDS_DoDoor( m_Sector, m_Type, m_Speed, m_Direction, m_LightTag, m_lDoorID, ulClient, SVCF_ONLYTHISCLIENT );
+	SERVERCOMMANDS_DoDoor( m_Sector, m_Type, m_Speed, m_Direction, m_LightTag, m_DoorID, ulClient, SVCF_ONLYTHISCLIENT );
 }
 
 int DDoor::GetDirection ()
@@ -450,7 +450,7 @@ DDoor::DDoor (sector_t *sector)
 	: DMovingCeiling (sector)
 {
 	// [EP]
-	m_lDoorID = -1;
+	m_DoorID = -1;
 }
 
 //============================================================================
@@ -523,20 +523,20 @@ DDoor::DDoor (sector_t *sec, EVlDoor type, fixed_t speed, int delay, int lightTa
 	m_OldFloorDist = sec->floorplane.d;
 
 	// [BB] We need to initialize the ID, because P_GetFirstFreeDoorID relies on this.
-	m_lDoorID = -1;
+	m_DoorID = -1;
 	// [BC] Assign the door's network ID.
-	if ( NETWORK_InClientMode() == false )
-		m_lDoorID = P_GetFirstFreeDoorID( );
+	if ( NETWORK_GetState() == NETSTATE_SERVER )
+		m_DoorID = P_GetFirstFreeDoorID( );
 }
 
 LONG DDoor::GetID( void )
 {
-	return ( m_lDoorID );
+	return ( m_DoorID );
 }
 
 void DDoor::SetID( LONG lID )
 {
-	m_lDoorID = lID;
+	m_DoorID = lID;
 }
 
 DDoor::EVlDoor DDoor::GetType( void )
@@ -642,7 +642,8 @@ bool EV_DoDoor (DDoor::EVlDoor type, line_t *line, AActor *thing,
 					{
 						// [BC] Added !thing, because sometimes thing can be NULL when this function
 						// is called by client_DoDoor.
-						if (!thing || !thing->player)
+						// [JS] Patches for the Door closing spam. 
+						if (!thing || !thing->player || zadmflags & ZADF_NODOORCLOSE)
 							return false;	// JDC: bad guys never close doors
 
 						door->m_Direction = -1;	// start going down immediately
@@ -753,29 +754,7 @@ DDoor *P_GetDoorByID( LONG lID )
 //
 LONG P_GetFirstFreeDoorID( void )
 {
-	LONG		lIdx;
-	DDoor		*pDoor;
-	bool		bIDIsAvailable;
-
-	for ( lIdx = 0; lIdx < 8192; lIdx++ )
-	{
-		TThinkerIterator<DDoor>		Iterator;
-
-		bIDIsAvailable = true;
-		while (( pDoor = Iterator.Next( )))
-		{
-			if ( pDoor->GetID( ) == lIdx )
-			{
-				bIDIsAvailable = false;
-				break;
-			}
-		}
-
-		if ( bIDIsAvailable )
-			return ( lIdx );
-	}
-
-	return ( -1 );
+	return NETWORK_GetFirstFreeID<DDoor>();
 }
 
 //*****************************************************************************
@@ -919,8 +898,8 @@ void DAnimatedDoor::Tick ()
 				m_Line2->sidedef[1]->SetTexture(side_t::mid, m_DoorAnim->TextureFrames[m_Frame]);
 
 				// [BC] Mark this line's textures as having been changed.
-				m_Line1->ulTexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
-				m_Line2->ulTexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
+				m_Line1->TexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
+				m_Line2->TexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
 
 				// [BC] If we're the server, tell clients that these lines' texture
 				// has changed.
@@ -982,8 +961,8 @@ void DAnimatedDoor::Tick ()
 				m_Line2->sidedef[1]->SetTexture(side_t::mid, m_DoorAnim->TextureFrames[m_Frame]);
 
 				// [BC] Mark this line's textures as having been changed.
-				m_Line1->ulTexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
-				m_Line2->ulTexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
+				m_Line1->TexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
+				m_Line2->TexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
 
 				// [BC] If we're the server, tell clients that these lines' texture
 				// has changed.
@@ -1036,8 +1015,8 @@ DAnimatedDoor::DAnimatedDoor (sector_t *sec, line_t *line, int speed, int delay,
 	m_Line2->sidedef[0]->SetTexture(side_t::mid, picnum);
 
 	// [BC] Mark this line's textures as having been changed.
-	m_Line1->ulTexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
-	m_Line2->ulTexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
+	m_Line1->TexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
+	m_Line2->TexChangeFlags |= TEXCHANGE_FRONTMEDIUM|TEXCHANGE_BACKMEDIUM;
 
 	// [BC] If we're the server, tell clients that these lines' texture
 	// has changed.

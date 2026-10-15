@@ -65,6 +65,13 @@ static	int		g_OutboundBytesMeasured = 0;
 
 //*****************************************************************************
 //
+extern std::ostream &operator<< ( std::ostream &os, const IPStringArray &input ) {
+	input.print ( os );
+	return os;
+}
+
+//*****************************************************************************
+//
 NETBUFFER_s::NETBUFFER_s ( )
 {
 	this->pbData = NULL;
@@ -78,7 +85,6 @@ NETBUFFER_s::NETBUFFER_s ( )
 NETBUFFER_s::NETBUFFER_s ( const NETBUFFER_s &Buffer )
 {
 	Init ( Buffer.ulMaxSize, Buffer.BufferType );
-	Clear();
 
 	memcpy( this->pbData, Buffer.pbData, Buffer.ulMaxSize );
 	this->ByteStream.pbStream = this->pbData + ( Buffer.ByteStream.pbStream - Buffer.pbData );
@@ -94,10 +100,10 @@ NETBUFFER_s::NETBUFFER_s ( const NETBUFFER_s &Buffer )
 //
 void NETBUFFER_s::Init( ULONG ulLength, BUFFERTYPE_e BufferType )
 {
-	memset( this, 0, sizeof( *this ));
 	this->ulMaxSize = ulLength;
 	this->pbData = new BYTE[ulLength];
 	this->BufferType = BufferType;
+	Clear();
 }
 
 //*****************************************************************************
@@ -144,15 +150,15 @@ LONG NETBUFFER_s::WriteTo( BYTESTREAM_s &ByteStream ) const
 {
 	LONG bufferSize = CalcSize();
 	if ( bufferSize > 0 )
-		NETWORK_WriteBuffer( &ByteStream, this->pbData, bufferSize );
+		ByteStream.WriteBuffer( this->pbData, bufferSize );
 	return bufferSize;
 }
 
 //*****************************************************************************
 //
-void NETWORK_AdvanceByteStreamPointer( BYTESTREAM_s *pByteStream, const int NumBytes, const bool OutboundTraffic )
+void BYTESTREAM_s::AdvancePointer( const int NumBytes, const bool OutboundTraffic )
 {
-	pByteStream->pbStream += NumBytes;
+	this->pbStream += NumBytes;
 
 	if ( g_MeasuringOutboundTraffic && OutboundTraffic )
 		g_OutboundBytesMeasured += NumBytes;
@@ -193,13 +199,13 @@ void BYTESTREAM_s::EnsureBitSpace( int bits, bool writing )
 		if ( writing )
 		{
 			// Not enough bits left in our current byte, we need a new one.
-			NETWORK_WriteByte( this, 0 );
+			WriteByte( 0 );
 			bitBuffer = pbStream - 1;
 		}
 		else
 		{
 			// No room for the value in this byte, so we need a new one.
-			if ( NETWORK_ReadByte( this ) != -1 )
+			if ( this->ReadByte() != -1 )
 			{
 				bitBuffer = pbStream - 1;
 			}
@@ -218,57 +224,57 @@ void BYTESTREAM_s::EnsureBitSpace( int bits, bool writing )
 
 //*****************************************************************************
 //
-int NETWORK_ReadByte( BYTESTREAM_s *pByteStream )
+int BYTESTREAM_s::ReadByte()
 {
 	int	Byte = -1;
 
-	if (( pByteStream->pbStream + 1 ) <= pByteStream->pbStreamEnd )
-		Byte = *pByteStream->pbStream;
+	if (( this->pbStream + 1 ) <= this->pbStreamEnd )
+		Byte = *this->pbStream;
 
 	// Advance the pointer.
-	pByteStream->pbStream += 1;
+	this->pbStream += 1;
 
 	return ( Byte );
 }
 
 //*****************************************************************************
 //
-int NETWORK_ReadShort( BYTESTREAM_s *pByteStream )
+int BYTESTREAM_s::ReadShort()
 {
 	int	Short = -1;
 
-	if (( pByteStream->pbStream + 2 ) <= pByteStream->pbStreamEnd )
-		Short = (short)(( pByteStream->pbStream[0] ) + ( pByteStream->pbStream[1] << 8 ));
+	if (( this->pbStream + 2 ) <= this->pbStreamEnd )
+		Short = (short)(( this->pbStream[0] ) + ( this->pbStream[1] << 8 ));
 
 	// Advance the pointer.
-	pByteStream->pbStream += 2;
+	this->pbStream += 2;
 
 	return ( Short );
 }
 
 //*****************************************************************************
 //
-int NETWORK_ReadLong( BYTESTREAM_s *pByteStream )
+int BYTESTREAM_s::ReadLong()
 {
 	int	Long = -1;
 
-	if (( pByteStream->pbStream + 4 ) <= pByteStream->pbStreamEnd )
+	if (( this->pbStream + 4 ) <= this->pbStreamEnd )
 	{
-		Long = (( pByteStream->pbStream[0] )
-		+ ( pByteStream->pbStream[1] << 8 )
-		+ ( pByteStream->pbStream[2] << 16 )
-		+ ( pByteStream->pbStream[3] << 24 ));
+		Long = (( this->pbStream[0] )
+		+ ( this->pbStream[1] << 8 )
+		+ ( this->pbStream[2] << 16 )
+		+ ( this->pbStream[3] << 24 ));
 	}
 
 	// Advance the pointer.
-	pByteStream->pbStream += 4;
+	this->pbStream += 4;
 
 	return ( Long );
 }
 
 //*****************************************************************************
 //
-float NETWORK_ReadFloat( BYTESTREAM_s *pByteStream )
+float BYTESTREAM_s::ReadFloat()
 {
 	union
 	{
@@ -276,13 +282,13 @@ float NETWORK_ReadFloat( BYTESTREAM_s *pByteStream )
 		int		i;
 	} dat;
 
-	dat.i = NETWORK_ReadLong( pByteStream );
+	dat.i = this->ReadLong();
 	return ( dat.f );
 }
 
 //*****************************************************************************
 //
-const char *NETWORK_ReadString( BYTESTREAM_s *pByteStream )
+const char *BYTESTREAM_s::ReadString()
 {
 	int c;
 	static char		s_szString[MAX_NETWORK_STRING];
@@ -291,7 +297,7 @@ const char *NETWORK_ReadString( BYTESTREAM_s *pByteStream )
 	ULONG ulIdx = 0;
 	do
 	{
-		c = NETWORK_ReadByte( pByteStream );
+		c = this->ReadByte();
 		if ( c <= 0 )
 			break;
 
@@ -313,47 +319,47 @@ const char *NETWORK_ReadString( BYTESTREAM_s *pByteStream )
 
 //*****************************************************************************
 //
-bool NETWORK_ReadBit( BYTESTREAM_s *byteStream )
+bool BYTESTREAM_s::ReadBit()
 {
-	byteStream->EnsureBitSpace( 1, false );
+	this->EnsureBitSpace( 1, false );
 
 	// Use a bit shift to extract a bit from our current byte
-	bool result = !!( *byteStream->bitBuffer & ( 1 << byteStream->bitShift ));
-	byteStream->bitShift++;
+	bool result = !!( *this->bitBuffer & ( 1 << this->bitShift ));
+	this->bitShift++;
 	return result;
 }
 
 //*****************************************************************************
 //
-int NETWORK_ReadVariable( BYTESTREAM_s *byteStream )
+int BYTESTREAM_s::ReadVariable()
 {
 	// Read two bits to form an integer 0...3
-	int length = NETWORK_ReadBit( byteStream );
-	length |= NETWORK_ReadBit( byteStream ) << 1;
+	int length = this->ReadBit();
+	length |= this->ReadBit() << 1;
 
 	// Use this length to read in an integer of variable length.
 	switch ( length )
 	{
 	default:
 	case 0: return 0;
-	case 1: return NETWORK_ReadByte( byteStream );
-	case 2: return NETWORK_ReadShort( byteStream );
-	case 3: return NETWORK_ReadLong( byteStream );
+	case 1: return this->ReadByte();
+	case 2: return this->ReadShort();
+	case 3: return this->ReadLong();
 	}
 }
 
 //*****************************************************************************
 //
-int NETWORK_ReadShortByte ( BYTESTREAM_s* byteStream, int bits )
+int BYTESTREAM_s::ReadShortByte ( int bits )
 {
 	if ( bits >= 0 && bits <= 8 )
 	{
-		byteStream->EnsureBitSpace( bits, false );
+		this->EnsureBitSpace( bits, false );
 		int mask = ( 1 << bits ) - 1; // Create a mask to cover the bits we want.
-		mask <<= byteStream->bitShift; // Shift the mask so that it covers the correct bits.
-		int result = *byteStream->bitBuffer & mask; // Apply the shifted mask on our byte to remove unwanted bits.
-		result >>= byteStream->bitShift; // Shift the result back to start from 0.
-		byteStream->bitShift += bits; // Increase shift to mark these bits as used.
+		mask <<= this->bitShift; // Shift the mask so that it covers the correct bits.
+		int result = *this->bitBuffer & mask; // Apply the shifted mask on our byte to remove unwanted bits.
+		result >>= this->bitShift; // Shift the result back to start from 0.
+		this->bitShift += bits; // Increase shift to mark these bits as used.
 		return result;
 	}
 	else
@@ -364,16 +370,16 @@ int NETWORK_ReadShortByte ( BYTESTREAM_s* byteStream, int bits )
 
 //*****************************************************************************
 //
-void NETWORK_ReadBuffer( BYTESTREAM_s *byteStream, void *buffer, size_t length )
+void BYTESTREAM_s::ReadBuffer( void *buffer, size_t length )
 {
-	if (( byteStream->pbStream + length ) > byteStream->pbStreamEnd )
+	if (( this->pbStream + length ) > this->pbStreamEnd )
 	{
-		Printf( "NETWORK_WriteLBuffer: Overflow!\n" );
+		Printf( "BYTESTREAM_s::ReadBuffer: Overflow!\n" );
 	}
 	else
 	{
-		memcpy( buffer, byteStream->pbStream, length );
-		byteStream->pbStream += length;
+		memcpy( buffer, this->pbStream, length );
+		this->pbStream += length;
 	}
 }
 
@@ -383,59 +389,59 @@ void NETWORK_ReadBuffer( BYTESTREAM_s *byteStream, void *buffer, size_t length )
 
 //*****************************************************************************
 //
-void NETWORK_WriteByte( BYTESTREAM_s *pByteStream, int Byte )
+void BYTESTREAM_s::WriteByte( int Byte )
 {
-	if (( pByteStream->pbStream + 1 ) > pByteStream->pbStreamEnd )
+	if (( this->pbStream + 1 ) > this->pbStreamEnd )
 	{
-		Printf( "NETWORK_WriteByte: Overflow!\n" );
+		Printf( "BYTESTREAM_s::WriteByte: Overflow!\n" );
 		return;
 	}
 
-	*pByteStream->pbStream = Byte;
+	*this->pbStream = Byte;
 
 	// Advance the pointer.
-	NETWORK_AdvanceByteStreamPointer ( pByteStream, 1, true );
+	this->AdvancePointer ( 1, true );
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteShort( BYTESTREAM_s *pByteStream, int Short )
+void BYTESTREAM_s::WriteShort( int Short )
 {
-	if (( pByteStream->pbStream + 2 ) > pByteStream->pbStreamEnd )
+	if (( this->pbStream + 2 ) > this->pbStreamEnd )
 	{
 		Printf( "NETWORK_WriteShort: Overflow!\n" );
 		return;
 	}
 
-	pByteStream->pbStream[0] = Short & 0xff;
-	pByteStream->pbStream[1] = Short >> 8;
+	this->pbStream[0] = Short & 0xff;
+	this->pbStream[1] = Short >> 8;
 
 	// Advance the pointer.
-	NETWORK_AdvanceByteStreamPointer ( pByteStream, 2, true );
+	this->AdvancePointer ( 2, true );
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteLong( BYTESTREAM_s *pByteStream, int Long )
+void BYTESTREAM_s::WriteLong( int Long )
 {
-	if (( pByteStream->pbStream + 4 ) > pByteStream->pbStreamEnd )
+	if (( this->pbStream + 4 ) > this->pbStreamEnd )
 	{
 		Printf( "NETWORK_WriteLong: Overflow!\n" );
 		return;
 	}
 
-	pByteStream->pbStream[0] = Long & 0xff;
-	pByteStream->pbStream[1] = ( Long >> 8 ) & 0xff;
-	pByteStream->pbStream[2] = ( Long >> 16 ) & 0xff;
-	pByteStream->pbStream[3] = ( Long >> 24 );
+	this->pbStream[0] = Long & 0xff;
+	this->pbStream[1] = ( Long >> 8 ) & 0xff;
+	this->pbStream[2] = ( Long >> 16 ) & 0xff;
+	this->pbStream[3] = ( Long >> 24 );
 
 	// Advance the pointer.
-	NETWORK_AdvanceByteStreamPointer ( pByteStream, 4, true );
+	this->AdvancePointer ( 4, true );
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteFloat( BYTESTREAM_s *pByteStream, float Float )
+void BYTESTREAM_s::WriteFloat( float Float )
 {
 	union
 	{
@@ -445,74 +451,74 @@ void NETWORK_WriteFloat( BYTESTREAM_s *pByteStream, float Float )
 
 	dat.f = Float;
 
-	NETWORK_WriteLong( pByteStream, dat.l );
+	this->WriteLong( dat.l );
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteString( BYTESTREAM_s *pByteStream, const char *pszString )
+void BYTESTREAM_s::WriteString( const char *pszString )
 {
 	if (( pszString ) && ( strlen( pszString ) > MAX_NETWORK_STRING ))
 	{
-		Printf( "NETWORK_WriteString: String exceeds %d characters!\n", MAX_NETWORK_STRING );
+		Printf( "BYTESTREAM_s::WriteString: String exceeds %d characters!\n", MAX_NETWORK_STRING );
 		return;
 	}
 
 #ifdef	WIN32
 	if ( pszString == NULL )
-		NETWORK_WriteBuffer( pByteStream, "", 1 );
+		this->WriteBuffer( "", 1 );
 	else
-		NETWORK_WriteBuffer( pByteStream, pszString, (int)( strlen( pszString )) + 1 );
+		this->WriteBuffer( pszString, (int)( strlen( pszString )) + 1 );
 #else
 	if ( pszString == NULL )
-		NETWORK_WriteByte( pByteStream, 0 );
+		this->WriteByte( 0 );
 	else
 	{
-		NETWORK_WriteBuffer( pByteStream, pszString, strlen( pszString ));
-		NETWORK_WriteByte( pByteStream, 0 );
+		this->WriteBuffer( pszString, strlen( pszString ));
+		this->WriteByte( 0 );
 	}
 #endif
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteBuffer( BYTESTREAM_s *pByteStream, const void *pvBuffer, int nLength )
+void BYTESTREAM_s::WriteBuffer( const void *pvBuffer, int nLength )
 {
-	if (( pByteStream->pbStream + nLength ) > pByteStream->pbStreamEnd )
+	if (( this->pbStream + nLength ) > this->pbStreamEnd )
 	{
 		Printf( "NETWORK_WriteLBuffer: Overflow!\n" );
 		return;
 	}
 
-	memcpy( pByteStream->pbStream, pvBuffer, nLength );
+	memcpy( this->pbStream, pvBuffer, nLength );
 
 	// Advance the pointer.
-	NETWORK_AdvanceByteStreamPointer ( pByteStream, nLength, true );
+	this->AdvancePointer ( nLength, true );
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteHeader( BYTESTREAM_s *pByteStream, int Byte )
+void BYTESTREAM_s::WriteHeader( int Byte )
 {
-	NETWORK_WriteByte( pByteStream, Byte );
-	pByteStream->bitBuffer = NULL;
-	pByteStream->bitShift = -1;
+	this->WriteByte( Byte );
+	this->bitBuffer = NULL;
+	this->bitShift = -1;
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteBit( BYTESTREAM_s *byteStream, bool bit )
+void BYTESTREAM_s::WriteBit( bool bit )
 {
 	// Add a bit to this byte
-	byteStream->EnsureBitSpace( 1, true );
+	this->EnsureBitSpace( 1, true );
 	if ( bit )
-		*byteStream->bitBuffer |= 1 << byteStream->bitShift;
-	++byteStream->bitShift;
+		*this->bitBuffer |= 1 << this->bitShift;
+	++this->bitShift;
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteVariable( BYTESTREAM_s *byteStream, int value )
+void BYTESTREAM_s::WriteVariable( int value )
 {
 	int length;
 
@@ -527,21 +533,21 @@ void NETWORK_WriteVariable( BYTESTREAM_s *byteStream, int value )
 		length = 3; // Must be sent as a long
 
 	// Write this length as two bits
-	NETWORK_WriteBit( byteStream, !!( length & 1 ) );
-	NETWORK_WriteBit( byteStream, !!( length & 2 ) );
+	this->WriteBit( !!( length & 1 ) );
+	this->WriteBit( !!( length & 2 ) );
 
 	// Depending on the required length, write the value.
 	switch ( length )
 	{
-	case 1: NETWORK_WriteByte( byteStream, value ); break;
-	case 2: NETWORK_WriteShort( byteStream, value ); break;
-	case 3: NETWORK_WriteLong( byteStream, value ); break;
+	case 1: this->WriteByte( value ); break;
+	case 2: this->WriteShort( value ); break;
+	case 3: this->WriteLong( value ); break;
 	}
 }
 
 //*****************************************************************************
 //
-void NETWORK_WriteShortByte( BYTESTREAM_s *byteStream, int value, int bits )
+void BYTESTREAM_s::WriteShortByte( int value, int bits )
 {
 	if (( bits < 1 ) || ( bits > 8 ))
 	{
@@ -549,11 +555,11 @@ void NETWORK_WriteShortByte( BYTESTREAM_s *byteStream, int value, int bits )
 		return;
 	}
 
-	byteStream->EnsureBitSpace( bits, true );
+	this->EnsureBitSpace( bits, true );
 	value &= (( 1 << bits ) - 1 ); // Form a mask from the bits and trim our value using it.
-	value <<= byteStream->bitShift; // Shift the value to its proper position.
-	*byteStream->bitBuffer |= value; // Add it to the byte.
-	byteStream->bitShift += bits; // Bump the shift value accordingly.
+	value <<= this->bitShift; // Shift the value to its proper position.
+	*this->bitBuffer |= value; // Add it to the byte.
+	this->bitShift += bits; // Bump the shift value accordingly.
 }
 
 //=============================================================================
@@ -563,6 +569,13 @@ void NETWORK_WriteShortByte( BYTESTREAM_s *byteStream, int value, int bits )
 //*****************************************************************************
 //
 NETADDRESS_s::NETADDRESS_s()
+{
+	Clear();
+}
+
+//*****************************************************************************
+//
+void NETADDRESS_s::Clear()
 {
 	abIP[0] = abIP[1] = abIP[2] = abIP[3] = 0;
 	usPort = 0;
@@ -631,55 +644,29 @@ bool NETADDRESS_s::LoadFromString ( const char* string )
 			*(int *)&sadr.sin_addr = ulRet;
 	}
 
-	this->LoadFromSocketAddress( sadr );
+	this->LoadFromSocketAddress( reinterpret_cast<sockaddr&>(sadr) );
 	return true;
 }
 
 //*****************************************************************************
 //
-void NETADDRESS_s::LoadFromSocketAddress ( const sockaddr_in& sockaddr )
+void NETADDRESS_s::LoadFromSocketAddress ( const struct sockaddr& sockaddr )
 {
-	*(int *)&this->abIP = *(const int *)&sockaddr.sin_addr;
-	this->usPort = sockaddr.sin_port;
+	const sockaddr_in ipv4 = reinterpret_cast<const sockaddr_in&> ( sockaddr );
+	*( int * )&this->abIP = *(const int *)&ipv4.sin_addr;
+	this->usPort = ipv4.sin_port;
 }
 
 //*****************************************************************************
 //
-sockaddr_in NETADDRESS_s::ToSocketAddress() const
+void NETADDRESS_s::ToSocketAddress( struct sockaddr &SocketAddress ) const
 {
-	sockaddr_in result;
-	memset( &result, 0, sizeof result );
-	*(int *)&result.sin_addr = *(const int *)&abIP;
-	result.sin_port = usPort;
-	result.sin_family = AF_INET;
-	return result;
-}
+	memset( &SocketAddress, 0, sizeof SocketAddress );
 
-//*****************************************************************************
-//
-const char* NETADDRESS_s::ToHostName() const
-{
-	//gethostbyaddr();
-	struct hostent *hp;
-	struct sockaddr_in socketAddress = ToSocketAddress();
-	static char		s_szName[256];
-
-	hp = gethostbyaddr( (char *) &(socketAddress.sin_addr), sizeof(socketAddress.sin_addr), AF_INET );
-
-	if ( hp )
-		strncpy ( s_szName, (char *)hp->h_name, sizeof(s_szName) - 1 );
-	else
-		sprintf ( s_szName, "host_not_found" );
-
-	return s_szName;
-}
-
-//*****************************************************************************
-//
-void NETADDRESS_s::ToIPStringArray( IPStringArray& address ) const
-{
-	for ( int i = 0; i < 4; ++i )
-		itoa( abIP[i], address[i], 10 );
+	struct sockaddr_in *ipv4 = reinterpret_cast <struct sockaddr_in *> ( &SocketAddress );
+	*(int *)&ipv4->sin_addr = *(int *)&abIP;
+	ipv4->sin_port = usPort;
+	ipv4->sin_family = AF_INET;
 }
 
 //*****************************************************************************
@@ -709,7 +696,42 @@ const char* NETADDRESS_s::ToStringNoPort() const
 
 //*****************************************************************************
 //
-bool NETWORK_StringToIP( const char *pszAddress, char *pszIP0, char *pszIP1, char *pszIP2, char *pszIP3 )
+bool NETADDRESS_s::IsSet() const
+{
+	return ( abIP[0] != 0 );
+}
+
+//*****************************************************************************
+//
+void NETADDRESS_s::WriteToStream ( BYTESTREAM_s *pByteStream, bool IncludePort ) const
+{
+	for ( int i = 0; i < 4; ++i )
+		pByteStream->WriteByte( abIP[i] );
+	if ( IncludePort )
+		pByteStream->WriteShort( ntohs( usPort ));
+}
+
+//*****************************************************************************
+//
+void NETADDRESS_s::ReadFromStream ( BYTESTREAM_s *pByteStream, bool IncludePort )
+{
+	for ( int i = 0; i < 4; ++i )
+		abIP[i] = pByteStream->ReadByte();
+	if ( IncludePort )
+		usPort = htons( pByteStream->ReadShort());
+}
+
+//*****************************************************************************
+//
+void IPStringArray::SetFrom ( const NETADDRESS_s &Address )
+{
+	for ( int i = 0; i < 4; ++i )
+		itoa( Address.abIP[i], szAddress[i], 10 );
+}
+
+//*****************************************************************************
+//
+bool IPStringArray::SetFromString ( const char *pszAddressString )
 {
 	char	szCopy[16];
 	char	*pszCopy;
@@ -719,7 +741,7 @@ bool NETWORK_StringToIP( const char *pszAddress, char *pszIP0, char *pszIP1, cha
 	ULONG	ulNumPeriods;
 
 	// First, get rid of anything after the colon (if it exists).
-	strncpy( szCopy, pszAddress, 15 );
+	strncpy( szCopy, pszAddressString, 15 );
 	szCopy[15] = 0;
 	for ( pszCopy = szCopy; *pszCopy; pszCopy++ )
 	{
@@ -757,19 +779,19 @@ bool NETWORK_StringToIP( const char *pszAddress, char *pszIP0, char *pszIP1, cha
 			{
 			case 0:
 
-				strcpy( pszIP0, szTemp );
+				strcpy( szAddress[0], szTemp );
 				break;
 			case 1:
 
-				strcpy( pszIP1, szTemp );
+				strcpy( szAddress[1], szTemp );
 				break;
 			case 2:
 
-				strcpy( pszIP2, szTemp );
+				strcpy( szAddress[2], szTemp );
 				break;
 			case 3:
 
-				strcpy( pszIP3, szTemp );
+				strcpy( szAddress[3], szTemp );
 				break;
 			}
 			ulIdx++;
@@ -785,19 +807,33 @@ bool NETWORK_StringToIP( const char *pszAddress, char *pszIP0, char *pszIP1, cha
 		}
 	}
 
-	strcpy( pszIP3, szTemp );
+	strcpy( szAddress[3], szTemp );
 
 	// Finally, make sure each entry of our string is valid.
-	if ((( atoi( pszIP0 ) < 0 ) || ( atoi( pszIP0 ) > 255 )) && ( _stricmp( "*", pszIP0 ) != 0 ))
-		return ( false );
-	if ((( atoi( pszIP1 ) < 0 ) || ( atoi( pszIP1 ) > 255 )) && ( _stricmp( "*", pszIP1 ) != 0 ))
-		return ( false );
-	if ((( atoi( pszIP2 ) < 0 ) || ( atoi( pszIP2 ) > 255 )) && ( _stricmp( "*", pszIP2 ) != 0 ))
-		return ( false );
-	if ((( atoi( pszIP3 ) < 0 ) || ( atoi( pszIP3 ) > 255 )) && ( _stricmp( "*", pszIP3 ) != 0 ))
-		return ( false );
+	for ( int i = 0; i < 4; ++i )
+	{
+		if ((( atoi( szAddress[i] ) < 0 ) || ( atoi( szAddress[i] ) > 255 )) && ( _stricmp( "*", szAddress[i] ) != 0 ))
+			return ( false );
+	}
 
     return ( true );
+}
+
+//*****************************************************************************
+//
+std::string IPADDRESSBAN_s::GetExpirationAsString( void ) const
+{
+	if (( tExpirationDate != 0 ) && ( tExpirationDate != -1 ))
+	{
+		struct tm *timeInfo = localtime( &tExpirationDate );
+		char tempBuffer[32];
+
+		strftime( tempBuffer, sizeof( tempBuffer ), "%m/%d/%Y %H:%M", timeInfo );
+		return tempBuffer;
+	}
+
+	// [AK] Return an empty string for permanent bans.
+	return "";
 }
 
 //--------------------------------------------------------------------------------------------------------------------------------------------------
@@ -901,7 +937,7 @@ bool IPFileParser::parseNextLine( FILE *pFile, IPADDRESSBAN_s &IP, ULONG &BanIdx
 		{
 			if ( lPosition > 0 )
 			{
-				if ( NETWORK_StringToIP( szIP, IP.szIP[0], IP.szIP[1], IP.szIP[2], IP.szIP[3] ))
+				if ( IP.szIP.SetFromString( szIP ))
 				{
 					if ( BanIdx == _listLength )
 					{
@@ -936,10 +972,7 @@ bool IPFileParser::parseNextLine( FILE *pFile, IPADDRESSBAN_s &IP, ULONG &BanIdx
 						return ( false );
 					}
 
-					_itoa( IPAddress.abIP[0], IP.szIP[0], 10 );
-					_itoa( IPAddress.abIP[1], IP.szIP[1], 10 );
-					_itoa( IPAddress.abIP[2], IP.szIP[2], 10 );
-					_itoa( IPAddress.abIP[3], IP.szIP[3], 10 );
+					IP.szIP.SetFrom ( IPAddress );
 					IP.tExpirationDate = 0;
 
 					BanIdx++;
@@ -950,10 +983,7 @@ bool IPFileParser::parseNextLine( FILE *pFile, IPADDRESSBAN_s &IP, ULONG &BanIdx
 				}
 				else
 				{
-					IP.szIP[0][0] = 0;
-					IP.szIP[1][0] = 0;
-					IP.szIP[2][0] = 0;
-					IP.szIP[3][0] = 0;
+					IP.szIP.Clear();
 				}
 			}
 
@@ -1087,7 +1117,7 @@ void IPList::removeExpiredEntries( void )
 			std::string	Message;
 
 			Message = "Temporary ban for ";
-			Message = Message + _ipVector[ulIdx].szIP[0] + "." + _ipVector[ulIdx].szIP[1] + "." + _ipVector[ulIdx].szIP[2] + "." + _ipVector[ulIdx].szIP[3];
+			Message += std::string ( _ipVector[ulIdx].szIP );
 			
 			// Add the ban reason.
 			if ( strlen( _ipVector[ulIdx].szComment ) )
@@ -1120,10 +1150,7 @@ ULONG IPList::getFirstMatchingEntryIndex( const IPStringArray &szAddress ) const
 {
 	for ( ULONG ulIdx = 0; ulIdx < _ipVector.size(); ulIdx++ )
 	{
-		if ((( _ipVector[ulIdx].szIP[0][0] == '*' ) || ( stricmp( szAddress[0], _ipVector[ulIdx].szIP[0] ) == 0 )) &&
-			(( _ipVector[ulIdx].szIP[1][0] == '*' ) || ( stricmp( szAddress[1], _ipVector[ulIdx].szIP[1] ) == 0 )) &&
-			(( _ipVector[ulIdx].szIP[2][0] == '*' ) || ( stricmp( szAddress[2], _ipVector[ulIdx].szIP[2] ) == 0 )) &&
-			(( _ipVector[ulIdx].szIP[3][0] == '*' ) || ( stricmp( szAddress[3], _ipVector[ulIdx].szIP[3] ) == 0 )))
+		if ( szAddress.Matches ( _ipVector[ulIdx].szIP ) )
 		{
 			return ( ulIdx );
 		}
@@ -1137,7 +1164,7 @@ ULONG IPList::getFirstMatchingEntryIndex( const IPStringArray &szAddress ) const
 ULONG IPList::getFirstMatchingEntryIndex( const NETADDRESS_s &Address ) const
 {
 	IPStringArray szAddress;
-	Address.ToIPStringArray( szAddress );
+	szAddress.SetFrom ( Address );
 	return getFirstMatchingEntryIndex( szAddress );
 }
 
@@ -1153,20 +1180,17 @@ bool IPList::isIPInList( const IPStringArray &szAddress ) const
 bool IPList::isIPInList( const NETADDRESS_s &Address ) const
 {
 	IPStringArray szAddress;
-	Address.ToIPStringArray( szAddress );
+	szAddress.SetFrom ( Address );
 	return isIPInList( szAddress );
 }
 
 //*****************************************************************************
 //
-ULONG IPList::doesEntryExist( const char *pszIP0, const char *pszIP1, const char *pszIP2, const char *pszIP3 ) const
+ULONG IPList::doesEntryExist( const IPStringArray &szAddress ) const
 {
 	for ( ULONG ulIdx = 0; ulIdx < _ipVector.size( ); ulIdx++ )
 	{
-		if (( stricmp( pszIP0, _ipVector[ulIdx].szIP[0] ) == 0 ) &&
-			( stricmp( pszIP1, _ipVector[ulIdx].szIP[1] ) == 0 ) &&
-			( stricmp( pszIP2, _ipVector[ulIdx].szIP[2] ) == 0 ) &&
-			( stricmp( pszIP3, _ipVector[ulIdx].szIP[3] ) == 0 ))
+		if ( szAddress.IsEqualTo ( _ipVector[ulIdx].szIP ) )
 		{
 			return ( ulIdx );
 		}
@@ -1182,12 +1206,7 @@ IPADDRESSBAN_s IPList::getEntry( const ULONG ulIdx ) const
 	if ( ulIdx >= _ipVector.size() )
 	{
 		IPADDRESSBAN_s	ZeroBan;
-
-		sprintf( ZeroBan.szIP[0], "0" );
-		sprintf( ZeroBan.szIP[1], "0" );
-		sprintf( ZeroBan.szIP[2], "0" );
-		sprintf( ZeroBan.szIP[3], "0" );
-
+		ZeroBan.szIP.SetToZeroes();
 		ZeroBan.szComment[0] = 0;
 		ZeroBan.tExpirationDate = 0;
 
@@ -1201,14 +1220,9 @@ IPADDRESSBAN_s IPList::getEntry( const ULONG ulIdx ) const
 //
 ULONG IPList::getEntryIndex( const NETADDRESS_s &Address ) const
 {
-	char szAddress[4][4];
-
-	itoa( Address.abIP[0], szAddress[0], 10 );
-	itoa( Address.abIP[1], szAddress[1], 10 );
-	itoa( Address.abIP[2], szAddress[2], 10 );
-	itoa( Address.abIP[3], szAddress[3], 10 );
-
-	return doesEntryExist( szAddress[0], szAddress[1], szAddress[2], szAddress[3] );
+	IPStringArray szAddress;
+	szAddress.SetFrom ( Address );
+	return doesEntryExist( szAddress );
 }
 
 //*****************************************************************************
@@ -1238,21 +1252,11 @@ std::string IPList::getEntryAsString( const ULONG ulIdx, bool bIncludeComment, b
 	if ( ulIdx < _ipVector.size() )
 	{
 		// Address.
-		entryStream << _ipVector[ulIdx].szIP[0] << "."
-					<< _ipVector[ulIdx].szIP[1] << "."
-					<< _ipVector[ulIdx].szIP[2] << "."
-					<< _ipVector[ulIdx].szIP[3];
+		entryStream << _ipVector[ulIdx].szIP;
 
 		// Expiration date.
 		if ( bIncludeExpiration && _ipVector[ulIdx].tExpirationDate != 0 && _ipVector[ulIdx].tExpirationDate != -1 )
-		{			
-			struct tm	*pTimeInfo;
-			char		szDate[32];
-
-			pTimeInfo = localtime( &(_ipVector[ulIdx].tExpirationDate) );
-			strftime( szDate, 32, "%m/%d/%Y %H:%M", pTimeInfo );
-			entryStream << "<" << szDate << ">";
-		}
+			entryStream << "<" << _ipVector[ulIdx].GetExpirationAsString( ) << ">";
 
 		// Comment.
 		if ( bIncludeComment && _ipVector[ulIdx].szComment[0] )
@@ -1268,7 +1272,7 @@ std::string IPList::getEntryAsString( const ULONG ulIdx, bool bIncludeComment, b
 
 //*****************************************************************************
 //
-void IPList::addEntry( const char *pszIP0, const char *pszIP1, const char *pszIP2, const char *pszIP3, const char *pszPlayerName, const char *pszCommentUncleaned, std::string &Message, time_t tExpiration )
+void IPList::addEntry( const IPStringArray &szAddress, const char *pszPlayerName, const char *pszCommentUncleaned, std::string &Message, time_t tExpiration )
 {
 	FILE				*pFile;
 	std::string			OutString;
@@ -1303,10 +1307,10 @@ void IPList::addEntry( const char *pszIP0, const char *pszIP1, const char *pszIP
 	}
 
 	// Address is already in the list.
-	ulIdx = doesEntryExist( pszIP0, pszIP1, pszIP2, pszIP3 );
+	ulIdx = doesEntryExist( szAddress );
 	if ( ulIdx != _ipVector.size() )
 	{
-		messageStream << pszIP0 << "." << pszIP1 << "."	<< pszIP2 << "." << pszIP3 << " already exists in list";
+		messageStream << szAddress << " already exists in \"" << _filename << "\"";
 		if ( ( getEntry ( ulIdx ).tExpirationDate != tExpiration ) || ( strnicmp ( getEntry ( ulIdx ).szComment, PlayerNameAndComment.c_str(), 127 ) ) )
 		{
 			messageStream << ". Just updating the expiration date and reason.\n";
@@ -1324,10 +1328,7 @@ void IPList::addEntry( const char *pszIP0, const char *pszIP1, const char *pszIP
 
 	// Add the entry and comment into memory.
 	IPADDRESSBAN_s newIPEntry;
-	sprintf( newIPEntry.szIP[0], "%s", pszIP0 );
-	sprintf( newIPEntry.szIP[1], "%s", pszIP1 );
-	sprintf( newIPEntry.szIP[2], "%s", pszIP2 );
-	sprintf( newIPEntry.szIP[3], "%s", pszIP3 );
+	newIPEntry.szIP.copyFrom ( szAddress );
 	strncpy( newIPEntry.szComment, PlayerNameAndComment.c_str(), 127 );
 	newIPEntry.szComment[127] = 0;
 	newIPEntry.tExpirationDate = tExpiration;
@@ -1337,7 +1338,7 @@ void IPList::addEntry( const char *pszIP0, const char *pszIP1, const char *pszIP
 	if ( (pFile = fopen( _filename.c_str(), "a" )) )
 	{
 		OutString = "\n";
-		OutString = OutString + pszIP0 + "." + pszIP1 + "." + pszIP2 + "." + pszIP3;
+		OutString += std::string ( szAddress );
 
 		// [RC] Write the expiration date of this ban.
 		if ( tExpiration )
@@ -1356,7 +1357,7 @@ void IPList::addEntry( const char *pszIP0, const char *pszIP1, const char *pszIP
 		fputs( OutString.c_str(), pFile );
 		fclose( pFile );
 
-		messageStream << pszIP0 << "." << pszIP1 << "."	<< pszIP2 << "." << pszIP3 << " added to list.";
+		messageStream << szAddress << " added to \"" << _filename << "\".";
 		if ( tExpiration )
 			messageStream << " It expires on " << szDate << ".";
 		
@@ -1375,18 +1376,14 @@ void IPList::addEntry( const char *pszIP0, const char *pszIP1, const char *pszIP
 void IPList::addEntry( const char *pszIPAddress, const char *pszPlayerName, const char *pszComment, std::string &Message, time_t tExpiration )
 {
 	NETADDRESS_s	BanAddress;
-	char			szStringBan[4][4];
+	IPStringArray	szStringBan;
 
-	if ( NETWORK_StringToIP( pszIPAddress, szStringBan[0], szStringBan[1], szStringBan[2], szStringBan[3] ))
-		addEntry( szStringBan[0], szStringBan[1], szStringBan[2], szStringBan[3], pszPlayerName, pszComment, Message, tExpiration );
+	if ( szStringBan.SetFromString( pszIPAddress ))
+		addEntry( szStringBan, pszPlayerName, pszComment, Message, tExpiration );
 	else if ( BanAddress.LoadFromString( pszIPAddress ))
 	{
-		itoa( BanAddress.abIP[0], szStringBan[0], 10 );
-		itoa( BanAddress.abIP[1], szStringBan[1], 10 );
-		itoa( BanAddress.abIP[2], szStringBan[2], 10 );
-		itoa( BanAddress.abIP[3], szStringBan[3], 10 );
-
-		addEntry( szStringBan[0], szStringBan[1], szStringBan[2], szStringBan[3], pszPlayerName, pszComment, Message, tExpiration );
+		szStringBan.SetFrom ( BanAddress );
+		addEntry( szStringBan, pszPlayerName, pszComment, Message, tExpiration );
 	}
 	else
 	{
@@ -1411,23 +1408,23 @@ void IPList::removeEntry( ULONG ulEntryIdx )
 //*****************************************************************************
 //
 // Removes the entry with the given IP. Writes a success/failure message to Message.
-void IPList::removeEntry( const char *pszIP0, const char *pszIP1, const char *pszIP2, const char *pszIP3, std::string &Message )
+void IPList::removeEntry( const IPStringArray &szAddress, std::string &Message )
 {
-	ULONG entryIdx = doesEntryExist( pszIP0, pszIP1, pszIP2, pszIP3 );
+	ULONG entryIdx = doesEntryExist( szAddress );
 
 	std::stringstream messageStream;
-	messageStream << pszIP0 << "." << pszIP1 << "." << pszIP2 << "." << pszIP3;
+	messageStream << szAddress;
 
 	if ( entryIdx < _ipVector.size() )
 	{
 		removeEntry( entryIdx );
 
-		messageStream << " removed from list.\n";
+		messageStream << " removed from \"" << _filename << "\".\n";
 		Message = messageStream.str();
 	}
 	else
 	{
-		messageStream << " not found in list.\n";
+		messageStream << " not found in \"" << _filename << "\".\n";
 		Message = messageStream.str();
 	}
 }
@@ -1437,10 +1434,10 @@ void IPList::removeEntry( const char *pszIP0, const char *pszIP1, const char *ps
 // Removes the entry with the given address. Writes a success/failure message to Message.
 void IPList::removeEntry( const char *pszIPAddress, std::string &Message )
 {
-	char			szStringBan[4][4];
+	IPStringArray szStringBan;
 
-	if ( NETWORK_StringToIP( pszIPAddress, szStringBan[0], szStringBan[1], szStringBan[2], szStringBan[3] ))
-		removeEntry( szStringBan[0], szStringBan[1], szStringBan[2], szStringBan[3], Message );
+	if ( szStringBan.SetFromString( pszIPAddress ))
+		removeEntry( szStringBan, Message );
 	else
 	{
 		Message = "Invalid IP address string: ";
@@ -1478,14 +1475,11 @@ struct ASCENDINGIPSORT_S
 	// [RC] Sorts the list ascendingly by IP, then by comment.
 	bool operator()( IPADDRESSBAN_s rpStart, IPADDRESSBAN_s rpEnd )
 	{
-		// Check each IP component.
-		for ( int i = 0; i < 4; i++ )
-		{
-			if ( atoi( rpStart.szIP[i] ) != atoi( rpEnd.szIP[i] ))
-				return ( atoi( rpStart.szIP[i] ) < atoi(rpEnd.szIP[i] ));
-		}
-
-		return ( strcmp( rpEnd.szComment, rpStart.szComment ) != 0 );
+		const int cmp = rpStart.szIP.CompareForSort ( rpEnd.szIP );
+		if ( cmp == 0 )
+			return ( strcmp( rpEnd.szComment, rpStart.szComment ) != 0 );
+		else
+			return ( cmp < 0 );
 	}
 };
 
@@ -1508,10 +1502,10 @@ void IPList::sort()
 //
 //=============================================================================
 
-void QueryIPQueue::adjustHead( const LONG CurrentTime )
+void QueryIPQueue::adjustHead( const unsigned long currentTime )
 {
-	while (( _iQueueHead != _iQueueTail ) && ( CurrentTime >= _IPQueue[_iQueueHead].lNextAllowedTime ))
-		_iQueueHead = ( _iQueueHead + 1 ) % MAX_QUERY_IPS;
+	while (( _queueHead != _queueTail ) && ( currentTime >= _IPQueue[_queueHead].nextAllowedTime ))
+		_queueHead = ( _queueHead + 1 ) % MAX_QUERY_IPS;
 }
 
 //=============================================================================
@@ -1525,7 +1519,7 @@ void QueryIPQueue::adjustHead( const LONG CurrentTime )
 bool QueryIPQueue::addressInQueue( const NETADDRESS_s AddressFrom ) const
 {
 	// Search through the queue.
-	for ( unsigned int i = _iQueueHead; i != _iQueueTail; i = ( i + 1 ) % MAX_QUERY_IPS )
+	for ( unsigned int i = _queueHead; i != _queueTail; i = ( i + 1 ) % MAX_QUERY_IPS )
 	{
 		if ( AddressFrom.CompareNoPort( _IPQueue[i].Address ))
 			return true;
@@ -1546,7 +1540,7 @@ bool QueryIPQueue::addressInQueue( const NETADDRESS_s AddressFrom ) const
 
 bool QueryIPQueue::isFull( ) const
 {
-	return ((( _iQueueTail + 1 ) % MAX_QUERY_IPS ) == _iQueueHead );
+	return ((( _queueTail + 1 ) % MAX_QUERY_IPS ) == _queueHead );
 }
 
 //=============================================================================
@@ -1557,19 +1551,19 @@ bool QueryIPQueue::isFull( ) const
 //
 //=============================================================================
 
-void QueryIPQueue::addAddress( const NETADDRESS_s AddressFrom, const LONG lCurrentTime, std::ostream *errorOut )
+void QueryIPQueue::addAddress( const NETADDRESS_s AddressFrom, const unsigned long currentTime, std::ostream *errorOut )
 {
 	// Add and advance the tail.
-	_IPQueue[_iQueueTail].Address = AddressFrom;
-	_IPQueue[_iQueueTail].lNextAllowedTime = lCurrentTime + _iEntryLength;
-	_iQueueTail = ( _iQueueTail + 1 ) % MAX_QUERY_IPS;
+	_IPQueue[_queueTail].Address = AddressFrom;
+	_IPQueue[_queueTail].nextAllowedTime = currentTime + _entryLength;
+	_queueTail = ( _queueTail + 1 ) % MAX_QUERY_IPS;
 
 	// Is the queue full?
-	if (_iQueueTail == _iQueueHead )
+	if ( _queueTail == _queueHead )
 	{
 		if ( errorOut )
 			*errorOut << "WARNING! The IP flood queue is full.\n";
 
-		_iQueueHead = ( _iQueueHead + 1 ) % MAX_QUERY_IPS; // [RC] Start removing older entries.
+		_queueHead = ( _queueHead + 1 ) % MAX_QUERY_IPS; // [RC] Start removing older entries.
 	}
 }

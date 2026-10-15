@@ -538,6 +538,40 @@ size_t DObject::StaticPointerSubstitution (DObject *old, DObject *notOld)
 	return changed;
 }
 
+// [AK]
+void DObject::ResetUserVars()
+{
+	// [BOF] Make sure this object is an actor.
+	if (GetClass()->IsDescendantOf(RUNTIME_CLASS(AActor)) == false)
+		return;
+
+	PSymbolTable *symt = &GetClass()->Symbols;
+	DWORD count;
+
+	for (; symt != NULL; symt = symt->ParentSymbolTable)
+	{
+		for (unsigned i = 0; i < symt->Symbols.Size(); i++)
+		{
+			PSymbol *sym = symt->Symbols[i];
+			if (sym->SymbolType == SYM_Variable)
+			{
+				PSymbolVariable *var = static_cast<PSymbolVariable *>(sym);
+				if (var->bUserVar)
+				{
+					count = var->ValueType.Type == VAL_Array ? var->ValueType.size : 1;
+					for (DWORD j = 0; j < count; j++)
+					{
+						int *savedValue = static_cast<AActor *>(this)->savedUserVars.CheckKey(var);
+
+						// [BOF] Restore original value if it exists; set to 0 otherwise.
+						((int *)(reinterpret_cast<BYTE *>(this) + var->offset))[j] = savedValue ? *savedValue : 0;
+					}
+				}
+			}
+		}
+	}
+}
+
 void DObject::SerializeUserVars(FArchive &arc)
 {
 	PSymbolTable *symt;

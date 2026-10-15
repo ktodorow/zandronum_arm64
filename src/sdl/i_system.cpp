@@ -27,6 +27,11 @@
 #include <fnmatch.h>
 #include <unistd.h>
 
+// [EP] Compiling hack for OSX, purge this after code upgrade.
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 #include <stdarg.h>
 #include <sys/types.h>
 #include <sys/time.h>
@@ -137,14 +142,13 @@ void I_EndRead(void)
 
 
 static DWORD TicStart;
-static DWORD TicNext;
 static DWORD BaseTime;
 static int TicFrozen;
 
 // Signal based timer.
 static Semaphore timerWait;
 static int tics;
-static DWORD sig_start, sig_next;
+static DWORD sig_start;
 
 void I_SelectTimer();
 
@@ -182,8 +186,12 @@ int I_GetTimePolled (bool saveMS)
 
 	if (saveMS)
 	{
+		// [Leo] Replaced the expressions for TicStart and TicNext below.
+		/*
 		TicStart = tm;
-		TicNext = Scale((Scale (tm, TICRATE, 1000) + 1), 1000, TICRATE);
+		*/
+		DWORD CurrentTic = ((tm - BaseTime) * TICRATE) / 1000;
+		TicStart = (CurrentTic * 1000 / TICRATE) + BaseTime;
 	}
 	return Scale(tm - BaseTime, TICRATE, 1000);
 }
@@ -193,7 +201,6 @@ int I_GetTimeSignaled (bool saveMS)
 	if (saveMS)
 	{
 		TicStart = sig_start;
-		TicNext = sig_next;
 	}
 	return tics;
 }
@@ -264,7 +271,6 @@ void I_HandleAlarm (int sig)
 	if(!TicFrozen)
 		tics++;
 	sig_start = SDL_GetTicks();
-	sig_next = Scale((Scale (sig_start, TICRATE, 1000) + 1), 1000, TICRATE);
 	SEMAPHORE_SIGNAL(timerWait)
 }
 
@@ -307,15 +313,14 @@ void I_SelectTimer()
 fixed_t I_GetTimeFrac (uint32 *ms)
 {
 	DWORD now = SDL_GetTicks ();
-	if (ms) *ms = TicNext;
-	DWORD step = TicNext - TicStart;
-	if (step == 0)
+	if (ms) *ms = TicStart + (1000 / TICRATE);
+	if (TicStart == 0)
 	{
 		return FRACUNIT;
 	}
 	else
 	{
-		fixed_t frac = clamp<fixed_t> ((now - TicStart)*FRACUNIT/step, 0, FRACUNIT);
+		fixed_t frac = clamp<fixed_t> ((now - TicStart)*FRACUNIT*TICRATE/1000, 0, FRACUNIT);
 		return frac;
 	}
 }

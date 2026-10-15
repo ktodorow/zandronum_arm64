@@ -699,14 +699,13 @@ void gl_RenderFrameModels( const FSpriteModelFrame *smf,
 			// [BB] In case the tic counter is frozen we have to leave ticFraction at zero.
 			if ( ConsoleState == c_up && menuactive != MENU_On && !(level.flags2 & LEVEL2_FROZEN) )
 			{
-				float time = GetTimeFloat();
-				ticFraction = (time - static_cast<int>(time));
+				ticFraction = FIXED2FLOAT(I_GetTimeFrac(NULL)); // [JM] Model Interp Fix
 			}
-			inter = static_cast<double>(curState->Tics - curTics - ticFraction)/static_cast<double>(curState->Tics);
+			inter = static_cast<double>(curState->Tics - curTics + ticFraction) / static_cast<double>(curState->Tics); // [JM] Model Interp Fix
 
 			// [BB] For some actors (e.g. ZPoisonShroom) spr->actor->tics can be bigger than curState->Tics.
 			// In this case inter is negative and we need to set it to zero.
-			if ( inter < 0. )
+			if (curState->Tics < curTics) // [JM] Model Interp Fix
 				inter = 0.;
 			else
 			{
@@ -715,7 +714,8 @@ void gl_RenderFrameModels( const FSpriteModelFrame *smf,
 				if ( (smf->flags & MDL_INTERPOLATEDOUBLEDFRAMES) )
 				{
 					const FState *prevState = curState - 1;
-					if ( (curState->sprite == prevState->sprite) && ( curState->Frame == prevState->Frame) )
+					// [AK] Make sure the previous state is valid before trying to use it.
+					if ( (ti->ActorInfo->OwnsState(prevState)) && (curState->sprite == prevState->sprite) && ( curState->Frame == prevState->Frame) )
 					{
 						inter /= 2.;
 						inter += 0.5;

@@ -592,7 +592,7 @@ void DrawFullHUD_Health()
 			szString );
 
 		LONG lMaxHealth = CPlayer->mo ? CPlayer->mo->GetMaxHealth() : deh.StartHealth;
-		sprintf( szString, "%d", static_cast<int> (( CPlayer->cheats & CF_PROSPERITY ) ? ( deh.MaxSoulsphere + 50 ) : lMaxHealth + CPlayer->lMaxHealthBonus) );
+		sprintf( szString, "%d", static_cast<int> (( CPlayer->cheats & CF_PROSPERITY ) ? ( deh.MaxSoulsphere + 50 ) : lMaxHealth + CPlayer->MaxHealthBonus) );
 		HUD_DrawText( ConFont, CR_RED,
 			ulCurXPos + ( healthArmorTexWidth ) + 8 + ConFont->StringWidth( "200/200" ) - ConFont->StringWidth( szString ),
 			ulCurYPos - ( TexMan["MEDIA0"]->GetHeight( ) / 2 ) - ( ConFont->GetHeight( ) / 2 ),
@@ -699,8 +699,10 @@ void DrawFullHUD_GameInformation()
 	{
 		if ( possession || teampossession )
 			sprintf( szString, "%d", static_cast<int> (CPlayer->lPointCount) );
-		else if ( teamlms )
-			szString[0] = 0; // Frags would be distracting and confusing with the 'x left' being wins.
+		// Frags would be distracting and confusing with the 'x left' being wins.
+		// [AK] Players don't receive points in domination either, so don't draw anything.
+		else if (( teamlms ) || ( domination ))
+			szString[0] = 0;
 		else if ( lastmanstanding )
 			sprintf( szString, "%d", static_cast<unsigned int> (CPlayer->ulWins) );
 		else if ( deathmatch )
@@ -713,14 +715,22 @@ void DrawFullHUD_GameInformation()
 		LONG left = SCOREBOARD_GetLeftToLimit( );
 		if(left > 0)
 		{
+			const bool playersEarnKills = !!( GAMEMODE_GetCurrentFlags( ) & GMF_PLAYERSEARNKILLS );
+
 			// [BB Be careful when using sprintf to append something.
-			if ( ( dmflags2 & DF2_KILL_MONSTERS) == false )
-				sprintf( szString + strlen(szString), " \\cb(%d left)", static_cast<int> (left) );
+			// [AK] Using a percentage should only be done in game modes where players earn kills.
+			if (( playersEarnKills ) || ( cl_showscoreleft ))
+			{
+				if (( playersEarnKills ) && ( dmflags2 & DF2_KILL_MONSTERS ))
+					sprintf( szString + strlen( szString ), TEXTCOLOR_TAN " (%ld%% left)", left );
+				else
+					sprintf( szString + strlen( szString ), TEXTCOLOR_TAN " (%ld left)", left );
+			}
 			else
-				sprintf( szString + strlen(szString), " \\cb(%d%% left)", static_cast<int> (left) );
+			{
+				sprintf( szString + strlen( szString ), TEXTCOLOR_TAN " (%ld to win)", left );
+			}
 		}
-		
-		V_ColorizeString( szString );
 
 		HUD_DrawText( ConFont, CR_RED,
 				ulCurXPos - ConFont->StringWidth( szString ),
@@ -752,7 +762,7 @@ void DrawFullHUD_GameInformation()
 			// If they're not, then check to see if they're carrying the white flag in one
 			// flag CTF.
 			if ( ( pInventory == NULL ) && CPlayer->mo )
-				pInventory = CPlayer->mo->FindInventory( PClass::FindClass( "WhiteFlag" ));
+				pInventory = CPlayer->mo->FindInventory( PClass::FindClass( "WhiteFlag" ), true );
 
 			// If the player is carrying any of these "flags", draw an indicator.
 			if ( pInventory )
@@ -780,7 +790,7 @@ void DrawFullHUD_GameInformation()
 				ulCurXPos + TexMan[szPatchName]->GetWidth( ) / 2,
 				ulCurYPos );
 
-			sprintf( szString, "%d", static_cast<int>( TEAM_GetScore( i )));
+			sprintf( szString, "%d", static_cast<int>( TEAM_GetPointCount( i )));
 			HUD_DrawText( ConFont, TEAM_GetTextColor( i ),
 				ulCurXPos + TexMan[szPatchName]->GetWidth( ) + 16,
 				ulCurYPos - ( TexMan[szPatchName]->GetHeight( ) / 2 ) - ( ConFont->GetHeight( ) / 2 ),
@@ -808,7 +818,7 @@ void DrawFullHUD_GameInformation()
 		else
 		{
 			for ( ULONG i = 0; i < teams.Size( ); i++ )
-				lPoints[i] = TEAM_GetScore( i );
+				lPoints[i] = TEAM_GetPointCount( i );
 		}
 		ulCurXPos = 4;
 		ulCurYPos = screenHeight - 4 - ( TexMan["MEDIA0"]->GetHeight( ) + 4 ) - ( TexMan["ARM1A0"]->GetHeight( ) + 4 ) - 14;
@@ -822,7 +832,7 @@ void DrawFullHUD_GameInformation()
 			if ( TEAM_CountPlayers( i ) < 1 )
 				continue;
 
-			sprintf( szString , "\\c%c%d\n", V_GetColorChar( TEAM_GetTextColor ( i ) ), static_cast<unsigned int> (lPoints[i]));
+			sprintf( szString , "\\c%s%d\n", TEAM_GetTextColorName ( i ), static_cast<unsigned int> (lPoints[i]));
 			V_ColorizeString( szString );
 
 			HUD_DrawText( ConFont, CR_GRAY,
@@ -835,12 +845,12 @@ void DrawFullHUD_GameInformation()
 	}
 
 	// Just simple deathmatch. Draw the individual rank/spread if there are competitors.
-	else if ( deathmatch && SCOREBOARD_GetNumPlayers( ) > 1 )
+	else if ( deathmatch && HUD_GetNumPlayers( ) > 1 )
 	{
 		ulCurXPos = 4;
 		ulCurYPos = screenHeight - 4 - ( TexMan["MEDIA0"]->GetHeight( ) + 4 ) *2 - ( TexMan["ARM1A0"]->GetHeight( ) + 4 ) - 14;
 		
-		sprintf( szString, "spread: \\cC%s%d", SCOREBOARD_GetSpread( ) > 0 ? "+" : "", static_cast<int> (SCOREBOARD_GetSpread( )));
+		sprintf( szString, "spread: \\cC%s%d", HUD_GetSpread( ) > 0 ? "+" : "", static_cast<int> (HUD_GetSpread( )));
 		V_ColorizeString( szString );
 
 		HUD_DrawText( ConFont, CR_RED,
@@ -852,7 +862,7 @@ void DrawFullHUD_GameInformation()
 		if ( !duel )
 		{
 			ulCurYPos += ConFont->GetHeight( ) + 4;
-			sprintf( szString, "rank: \\cC%d/%s%d", static_cast<unsigned int> (SCOREBOARD_GetRank( ) + 1), SCOREBOARD_IsTied( ) ? "\\cG" : "", static_cast<unsigned int> (SCOREBOARD_GetNumPlayers( )));
+			sprintf( szString, "rank: \\cC%d/%s%d", static_cast<unsigned int> (HUD_GetRank( ) + 1), HUD_IsTied( ) ? "\\cG" : "", static_cast<unsigned int> (HUD_GetNumPlayers( )));
 			V_ColorizeString( szString );
 			HUD_DrawText( ConFont, CR_RED,
 				ulCurXPos,
@@ -1211,11 +1221,8 @@ void DrawFullHUD_GameInformation()
 	}
 
 	// [BC] Skulltag's new fullscreen HUD.
-	bool			bScale;
 	int				screenWidth;
 	int				screenHeight;
-	float			fXScale;
-	float			fYScale;
 	ULONG			ulCurYPos;
 	ULONG			ulCurXPos;
 	char			szString[32];
@@ -1234,21 +1241,9 @@ void DrawFullHUD_GameInformation()
 		if ( CPlayer->bSpectating )
 			return;
 
-		const UCVarValue ValWidth = con_virtualwidth.GetGenericRep( CVAR_Int );
-		const UCVarValue ValHeight = con_virtualheight.GetGenericRep( CVAR_Int );
-
-		if (( con_scaletext ) && ( con_virtualwidth > 0 ) && ( con_virtualheight > 0 ))
-		{
-			fXScale =  (float)ValWidth.Int / 320.0f;
-			fYScale =  (float)ValHeight.Int / 200.0f;
-			bScale = true;
-		}
-		else
-			bScale = false;
-
 		// [BB] Store the screen width / height taking into account user selected scaling.
-		screenWidth = bScale ? ValWidth.Int : SCREENWIDTH;
-		screenHeight = bScale ? ValHeight.Int : SCREENHEIGHT;
+		screenWidth = HUD_GetWidth( );
+		screenHeight = HUD_GetHeight( );
 
 		/*=========================================================
 		Draw the bottom parts of the HUD - health, armor, and ammo.

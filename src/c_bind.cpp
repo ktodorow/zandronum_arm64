@@ -70,29 +70,25 @@ static const FBinding DefBindings[] =
 	{ "]", "invnext" },
 	{ "mwheelleft", "invprev" },
 	{ "mwheelright", "invnext" },
-	{ "enter", "invuse" },
+	{ "\\", "invuse" }, // [AK]
 	{ "-", "sizedown" },
 	{ "=", "sizeup" },
-	{ "ctrl", "+attack" },
+	{ "ctrl", "+crouch" }, // [AK]
 	{ "alt", "+strafe" },
-#ifdef PANDORA
-	{ "home", "+strafe" },
-#endif
 	{ "shift", "+speed" },
-	{ "space", "+use" },
-#ifdef PANDORA
-	{ "rightarrow", "+moveright" },
-	{ "leftarrow", "+moveleft" },
-#else
+	{ "space", "+jump" }, // [AK]
+	{ "e", "+use" }, // [AK]
 	{ "rightarrow", "+right" },
 	{ "leftarrow", "+left" },
-#endif
 	{ "uparrow", "+forward" },
 	{ "downarrow", "+back" },
-	{ ",", "+moveleft" },
-	{ ".", "+moveright" },
+	// [AK] Added WASD controls to replace "," and "." for movement.
+	{ "w", "+forward" },
+	{ "s", "+back" },
+	{ "a", "+moveleft" },
+	{ "d", "+moveright" },
 	{ "mouse1", "+attack" },
-	{ "mouse2", "+strafe" },
+	{ "mouse2", "+altattack" }, // [AK]
 	{ "mouse3", "+forward" },
 	{ "mouse4", "+speed" },
 	{ "capslock", "toggle cl_run" },
@@ -107,15 +103,21 @@ static const FBinding DefBindings[] =
 	{ "f9", "quickload" },
 	{ "f11", "bumpgamma" },
 	{ "f10", "menu_quit" },
-	{ "tab", "togglemap" },
+	{ "enter", "togglemap" }, // [AK]
 	{ "pause", "pause" },
 	{ "sysrq", "screenshot" },
-	{ "t", "say" },	// [BC] messagemode changed to "say"
-	{ "\\", "+showscores" },
+	// [AK] Added/changed binds for global, team, and private chat modes.
+	{ "y", "messagemode" },
+	{ "t", "messagemode2" },
+	{ "p", "messagemode3" },
+	{ "tab", "+showscores" }, // [AK] 
 	{ "f12", "spynext" },
 	{ "mwheeldown", "weapnext" },
 	{ "mwheelup", "weapprev" },
-	{ "m", "+showmedals" },	// [BC] New buttons below for Skulltag.
+	// [AK] Added default binds for "weapswap", "weapdrop", and "reload".
+	{ "q", "weapswap" },
+	{ "g", "weapdrop" },
+	{ "r", "+reload" },
 	{ "u", "taunt" },
 	{ "pgup", "vote_yes" },
 	{ "pgdn", "vote_no" },
@@ -146,18 +148,11 @@ static const FBinding DefBindings[] =
 static const FBinding DefRavenBindings[] =
 {
 	{ "pgup", "+moveup" },
-#ifdef PANDORA
- 	{ "pgdn", "+movedown" },
- 	{ "i", "+lookup" },
- 	{ "k", "+lookdown" },
- 	{ "o", "centerview" },
-#else
 	{ "insert", "+movedown" },
 	{ "home", "land" },
 	{ "pgdn", "+lookup" },
 	{ "del", "+lookdown" },
 	{ "end", "centerview" },
-#endif
 	{ NULL, NULL }
 };
 
@@ -169,11 +164,7 @@ static const FBinding DefHereticBindings[] =
 
 static const FBinding DefHexenBindings[] =
 {
-#ifdef PANDORA
-	{ "end", "+jump" },
-#else
 	{ "/", "+jump" },
-#endif
 	{ "backspace", "invuseall" },
 	{ "\\", "use ArtiHealth" },
 	{ "0", "useflechette" },
@@ -188,8 +179,7 @@ static const FBinding DefHexenBindings[] =
 
 static const FBinding DefStrifeBindings[] =
 {
-	//{ "a", "+jump" },
-	{ "end", "+jump" },	//PANDORA
+	{ "a", "+jump" },
 	{ "w", "showpop 1" },
 	{ "backspace", "invdrop" },
 	{ "z", "showpop 3" },
@@ -247,11 +237,7 @@ const char *KeyNames[NUM_KEYS] =
 	"o",		"p",		"[",		"]",		"enter",	"ctrl",		"a",		"s",		//18
 	"d",		"f",		"g",		"h",		"j",		"k",		"l",		";",		//20
 	"'",		"`",		"shift",	"\\",		"z",		"x",		"c",		"v",		//28
-#ifdef PANDORA
-	"b",		"n",		"m",		",",		".",		"/",		"{R}",		"kp*",		//30
-#else
 	"b",		"n",		"m",		",",		".",		"/",		"rshift",	"kp*",		//30
-#endif
 	"alt",		"space",	"capslock",	"f1",		"f2",		"f3",		"f4",		"f5",		//38
 	"f6",		"f7",		"f8",		"f9",		"f10",		"numlock",	"scroll",	"kp7",		//40
 	"kp8",		"kp9",		"kp-",		"kp4",		"kp5",		"kp6",		"kp+",		"kp1",		//48
@@ -269,15 +255,9 @@ const char *KeyNames[NUM_KEYS] =
 	NULL,		NULL,		NULL,		NULL,		NULL,		NULL,		"voldown",	NULL,		//A8
 	"volup",	NULL,		"webhome",	"kp,",		NULL,		"kp/",		NULL,		"sysrq",	//B0
 	"ralt",		NULL,		NULL,		NULL,		NULL,		NULL,		NULL,		NULL,		//B8
-#ifdef PANDORA
-	NULL,		NULL,		NULL,		NULL,		NULL,		"pause",	NULL,		"{A}",		//C0
-	"uparrow",	"{Y}",		NULL,		"leftarrow",NULL,		"rightarrow",NULL,		"{B}",		//C8
-	"downarrow","{X}",		"ins",		"del",		NULL,		NULL,		NULL,		NULL,		//D0
-#else
 	NULL,		NULL,		NULL,		NULL,		NULL,		"pause",	NULL,		"home",		//C0
 	"uparrow",	"pgup",		NULL,		"leftarrow",NULL,		"rightarrow",NULL,		"end",		//C8
 	"downarrow","pgdn",		"ins",		"del",		NULL,		NULL,		NULL,		NULL,		//D0
-#endif
 	NULL,		NULL,		NULL,		"lwin",		"rwin",		"apps",		"power",	"sleep",	//D8
 	NULL,		NULL,		NULL,		"wake",		NULL,		"search",	"favorites","refresh",	//E0
 	"webstop",	"webforward","webback",	"mycomputer","mail",	"mediaselect",NULL,		NULL,		//E8
@@ -716,7 +696,7 @@ void C_UnbindAll ()
 	AutomapBindings.UnbindAll();
 }
 
-CCMD (unbindall)
+UNSAFE_CCMD (unbindall)
 {
 	// [BC] This function may not be used by ConsoleCommand.
 	if ( ACS_IsCalledFromConsoleCommand( ))
@@ -963,7 +943,7 @@ bool C_DoKey (event_t *ev, FKeyBindings *binds, FKeyBindings *doublebinds)
 
 
 // [RC] Returns the (first) key name, if any, used for a command 
-void C_FindBind(char *Command, char *Key) {
+void C_FindBind(const char *Command, char *Key) {
 	int key1 = -1; int key2 = -1;
 	Bindings.GetKeysForCommand(Command, &key1, &key2);
 	if(key1 <= 0)

@@ -40,6 +40,9 @@
 #include "memarena.h"
 #include "g_level.h"
 
+// [AK] Needed for std::numeric_limits in the IDList class.
+#include <limits>
+
 struct subsector_t;
 //
 // NOTES: AActor
@@ -431,6 +434,21 @@ enum
 	// [BB] Hidden by HideOrDestroyIfSafe(), will be restored when the map is reset.
 	STFL_HIDDEN_INSTEAD_OF_DESTROYED		= 0x00800000,
 
+	// [AK] This actor may (not) trigger GAMEEVENT_ACTOR_SPAWNED upon spawning.
+	STFL_USESPAWNEVENTSCRIPT	= 0x01000000,
+	STFL_NOSPAWNEVENTSCRIPT		= 0x02000000,
+
+	// [AK] This actor may (not) trigger the GAMEEVENT_ACTOR_DAMAGED event type.
+	STFL_USEDAMAGEEVENTSCRIPT	= 0x04000000,
+	STFL_NODAMAGEEVENTSCRIPT	= 0x08000000,
+
+	// [AK] This projectile will always collide/push the shooter's allies, even if sv_shootthroughallies
+	// or sv_dontpushallies are enabled.
+	STFL_FORCEALLYCOLLISION		= 0x10000000,
+
+	// [AK] This actor was spawned by a random spawner.
+	STFL_RANDOMSPAWNED			= 0x20000000,
+
 // More flags for Skulltag... these having to do with the network.
 
 	// This object does not have a network ID.
@@ -664,6 +682,7 @@ enum
 	AMETA_BloodType,		// Blood replacement type
 	AMETA_BloodType2,		// Bloodsplatter replacement type
 	AMETA_BloodType3,		// AxeBlood replacement type
+	AMETA_SelfObituary,		// [SB] Used when a player kills themselves with this actor
 };
 
 struct FDropItem 
@@ -814,10 +833,12 @@ public:
 	}
 
 	// Adds one item of a particular type. Returns NULL if it could not be added.
-	AInventory *GiveInventoryType (const PClass *type);
+	// [AK] Added checkNoLMSFlag, specifically for weapons.
+	AInventory *GiveInventoryType (const PClass *type, bool checkNoLMSFlag = false);
 
 	// [BB] Adds one item of a particular type or its replacement. Returns NULL if it could not be added.
-	AInventory *GiveInventoryTypeRespectingReplacements (const PClass *type);
+	// [AK] Added checkNoLMSFlag, specifically for weapons.
+	AInventory *GiveInventoryTypeRespectingReplacements (const PClass *type, bool checkNoLMSFlag = false);
 
 	// Returns the first item held with IF_INVBAR set.
 	AInventory *FirstInv ();
@@ -990,17 +1011,14 @@ public:
 	// [BB] If 0, everybody can see the actor, if > 0, only members of team (VisibleToTeam-1) can see it.
 	DWORD			VisibleToTeam;
 
-	// [BB] If 0, not limited to any team, if > 0, limited to the team with number (ulLimitedToTeam-1).
-	// [EP] TODO: remove the 'ul' prefix from this variable, it isn't ULONG anymore
-	unsigned int	ulLimitedToTeam;
+	// [BB] If 0, not limited to any team, if > 0, limited to the team with number (LimitedToTeam-1).
+	unsigned int	LimitedToTeam;
 
 	// [BC] A new set of flags that ST uses.
-	// [EP] TODO: remove the 'ul' prefix from this variable, it isn't ULONG anymore
-	unsigned int	ulSTFlags;
+	unsigned int	STFlags;
 
 	// [BC] A new set of flags that deal with network games.
-	// [EP] TODO: remove the 'ul' prefix from this variable, it isn't ULONG anymore
-	unsigned int	ulNetworkFlags;
+	unsigned int	NetworkFlags;
 
 	int				special1;		// Special info
 	int				special2;		// Special info
@@ -1136,20 +1154,17 @@ public:
 
 	// [BC] Bunch of new stuff for ST.
 	// Should this actor be drawn with a different colormap?
-	// [EP] TODO: remove the 'l' prefix from this variable, it isn't LONG anymore
-	int			lFixedColormap;
+	int			FixedColormap;
 
 	// ID used to identify this actor over network games.
-	// [EP] TODO: remove the 'l' prefix from this variable, it isn't LONG anymore
-	int			lNetID;
+	unsigned short NetID;
 
 	// Pointer to the pickup spot this item was spawned from.
 	ABaseMonsterInvasionSpot		*pMonsterSpot;
 	ABasePickupInvasionSpot			*pPickupSpot;
 
 	// What wave does this monster belong to in invasion mode?
-	// [EP] TODO: remove the 'ul' prefix from this variable, it isn't ULONG anymore
-	unsigned int ulInvasionWave;
+	unsigned int InvasionWave;
 
 	// [TP] Rune that is currently in effect
 	TObjPtr<class APowerup> Rune;
@@ -1171,6 +1186,22 @@ public:
 
 	// [BB] Last movedir that was sent to the client.
 	BYTE lastMovedir;
+
+	// [BOF] Save more MapThing values for map resets.
+	TMap<PSymbolVariable *, int> savedUserVars;
+
+	fixed_t				SavedPitch, SavedRoll;
+
+	fixed_t				SavedScaleX, SavedScaleY;
+	FRenderStyle		SavedRenderStyle;
+	fixed_t				SavedAlpha;
+	DWORD				SavedFillColor;
+
+	fixed_t				SavedGravity;
+	int					SavedScore;
+	int					SavedHealth;
+	FStrifeDialogueNode *SavedConversation;
+	BYTE				SavedFloatBobPhase;
 
 	// ThingIDs
 	static void ClearTIDHashes ();
@@ -1344,9 +1375,6 @@ void PrintMiscActorInfo(AActor * query);
 template <typename T>
 class IDList
 {
-public:
-	const static int MAX_NETID = 32768;
-
 private:
 	// List of all possible network ID's for an actor. Slot is true if it available for use.
 	typedef struct
@@ -1359,12 +1387,12 @@ private:
 
 	} IDNODE_t;
 
-	IDNODE_t _entries[MAX_NETID];
-	ULONG _firstFreeID;
+	IDNODE_t _entries[ static_cast<unsigned int>(( std::numeric_limits<unsigned short>::max )( )) + 1];
+	unsigned short _firstFreeID;
 
-	inline bool isIndexValid ( const LONG lNetID ) const
+	inline bool isIndexValid ( const unsigned short netID ) const
 	{
-		return ( lNetID >= 0 ) && ( lNetID < MAX_NETID );
+		return ( netID > 0 );
 	}
 public:
 	void clear ( );
@@ -1377,30 +1405,30 @@ public:
 		clear ( );
 	}
 
-	void useID ( const LONG lNetID, T *pActor );
+	void useID ( const unsigned short netID, T *actor );
 
-	void freeID ( const LONG lNetID )
+	void freeID ( const unsigned short netID )
 	{
-		if ( isIndexValid ( lNetID ) )
+		if ( isIndexValid ( netID ) )
 		{
-			_entries[lNetID].bFree = true;
-			_entries[lNetID].pActor = NULL;
+			_entries[netID].bFree = true;
+			_entries[netID].pActor = NULL;
 		}
 	}
 
-	ULONG getNewID ( );
+	unsigned short getNewID ( );
 
-	T* findPointerByID ( const LONG lNetID ) const
+	T* findPointerByID ( const unsigned short netID ) const
 	{
-		if ( isIndexValid ( lNetID ) == false )
+		if ( isIndexValid ( netID ) == false )
 			return ( NULL );
 
-		if (( _entries[lNetID].bFree == false ) && ( _entries[lNetID].pActor ))
-			return ( _entries[lNetID].pActor );
+		if (( _entries[netID].bFree == false ) && ( _entries[netID].pActor ))
+			return ( _entries[netID].pActor );
 
 		return ( NULL );
 	}
 };
 
-extern	IDList<AActor> g_NetIDList;
+extern	IDList<AActor> g_ActorNetIDList;
 #endif // __P_MOBJ_H__

@@ -73,8 +73,15 @@ static	ULONG	g_ulLastSuicideTime = 0;
 static	ULONG	g_ulLastJoinTime = 0;
 static	ULONG	g_ulLastDropTime = 0;
 static	ULONG	g_ulLastSVCheatMessageTime = 0;
+static	ULONG	g_ulLastWeaponSelectTime = 0; // [AK]
 static	bool g_bIgnoreWeaponSelect = false;
 SDWORD g_sdwCheckCmd = 0;
+
+// [AK] Backups of the last few movement commands we sent to the server.
+static RingBuffer<CLIENT_MOVE_COMMAND_s, MAX_BACKUP_COMMANDS> g_BackupMoveCMDs;
+
+// [AK] The last weapon class we tried switching to before sending to the server.
+static const PClass	*g_pLastWeaponClass = NULL;
 
 //*****************************************************************************
 //	FUNCTIONS
@@ -86,6 +93,15 @@ void CLIENT_ResetFloodTimers( void )
 	g_ulLastJoinTime = 0;
 	g_ulLastDropTime = 0;
 	g_ulLastSVCheatMessageTime = 0;
+}
+
+//*****************************************************************************
+//
+void CLIENT_ClearBackupCommands( void )
+{
+	g_BackupMoveCMDs.clear( );
+	g_ulLastWeaponSelectTime = 0;
+	g_pLastWeaponClass = NULL;
 }
 
 //*****************************************************************************
@@ -172,11 +188,11 @@ static void clientcommands_WriteCVarToUserinfo( FName name, FBaseCVar *cvar )
 		// [BB] Terminate the current CLC_USERINFO command.
 		NETWORK_WriteName( &CLIENT_GetLocalBuffer( )->ByteStream, NAME_None );
 		CLIENT_SendServerPacket();
-		NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_USERINFO );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_USERINFO );
 	}
 
 	NETWORK_WriteName( &CLIENT_GetLocalBuffer( )->ByteStream, name );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, value );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( value );
 }
 
 //*****************************************************************************
@@ -226,7 +242,7 @@ void CLIENTCOMMANDS_UserInfo( const UserInfoChanges &cvars )
 	if ( sendUserinfo == false )
 		return;
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_USERINFO );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_USERINFO );
 
 	for ( UserInfoChanges::const_iterator iterator = cvars.begin(); iterator != cvars.end(); ++iterator )
 	{
@@ -241,35 +257,15 @@ void CLIENTCOMMANDS_UserInfo( const UserInfoChanges &cvars )
 
 //*****************************************************************************
 //
-void CLIENTCOMMANDS_StartChat( void )
+void CLIENTCOMMANDS_SetStatus( void )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_STARTCHAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SETSTATUS );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( players[consoleplayer].statuses );
 }
 
 //*****************************************************************************
 //
-void CLIENTCOMMANDS_EndChat( void )
-{
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_ENDCHAT );
-}
-
-//*****************************************************************************
-//
-void CLIENTCOMMANDS_EnterConsole( void )
-{
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_ENTERCONSOLE );
-}
-
-//*****************************************************************************
-//
-void CLIENTCOMMANDS_ExitConsole( void )
-{
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_EXITCONSOLE );
-}
-
-//*****************************************************************************
-//
-void CLIENTCOMMANDS_Say( ULONG ulMode, const char *pszString )
+void CLIENTCOMMANDS_Say( ULONG ulMode, const char *pszString, ULONG ulPlayer )
 {
 	// [TP] Limit messages to certain length.
 	FString chatstring ( pszString );
@@ -277,45 +273,70 @@ void CLIENTCOMMANDS_Say( ULONG ulMode, const char *pszString )
 	if ( chatstring.Len() > MAX_CHATBUFFER_LENGTH )
 		chatstring = chatstring.Left( MAX_CHATBUFFER_LENGTH );
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SAY );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, ulMode );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, chatstring );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SAY );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( ulMode );
+
+	// [AK] If we're sending a private message, also send the receiver's number.
+	if ( ulMode == CHATMODE_PRIVATE_SEND )
+		CLIENT_GetLocalBuffer()->ByteStream.WriteByte( ulPlayer );
+
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( chatstring );
 }
 
 //*****************************************************************************
 //
-void CLIENTCOMMANDS_Ignore( ULONG ulPlayer, bool bIgnore, LONG lTicks )
+void CLIENTCOMMANDS_Ignore( const unsigned int player, const bool ignore, const bool doVoice, const int ticks )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_IGNORE );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, ulPlayer );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, bIgnore );
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, lTicks );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_IGNORE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( player );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteBit( ignore );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteBit( doVoice );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( ticks );
 }
 
 //*****************************************************************************
 //
-void CLIENTCOMMANDS_ClientMove( void )
+static CLIENT_MOVE_COMMAND_s clientcommand_CreateMoveCommand( void )
 {
-	ticcmd_t	*pCmd;
-	ULONG		ulBits;
+	CLIENT_MOVE_COMMAND_s moveCMD;
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_CLIENTMOVE );
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, gametic );
-	// [CK] Send the server the latest known server-gametic
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, CLIENT_GetLatestServerGametic( ) + CLIENT_GetServerGameticOffset( ) );
-
-	// Decide what additional information needs to be sent.
-	ulBits = 0;
-	pCmd = &players[consoleplayer].cmd;
+	moveCMD.ulGametic = gametic;
+	moveCMD.ulServerGametic = CLIENT_GetLatestServerGametic( ) + CLIENT_GetServerGameticOffset( );
+	moveCMD.cmd = players[consoleplayer].cmd;
 
 	// [BB] If we think that we can't move, don't even try to tell the server that we
 	// want to move.
 	if ( players[consoleplayer].mo->reactiontime )
 	{
-		pCmd->ucmd.forwardmove = 0;
-		pCmd->ucmd.sidemove = 0;
-		pCmd->ucmd.buttons &= ~BT_JUMP;
+		moveCMD.cmd.ucmd.forwardmove = 0;
+		moveCMD.cmd.ucmd.sidemove = 0;
+		moveCMD.cmd.ucmd.buttons &= ~BT_JUMP;
 	}
+
+	moveCMD.angle = players[consoleplayer].mo->angle;
+	moveCMD.pitch = players[consoleplayer].mo->pitch;
+	// [AK] Calculate the checksum of this ticcmd from this tic.
+	moveCMD.sdwChecksum = g_sdwCheckCmd;
+
+	if ( players[consoleplayer].ReadyWeapon == NULL )
+		moveCMD.usWeaponNetworkIndex = 0;
+	else
+		moveCMD.usWeaponNetworkIndex = players[consoleplayer].ReadyWeapon->GetClass( )->getActorNetworkIndex( );
+
+	return moveCMD;
+}
+
+//*****************************************************************************
+//
+static void clientcommand_WriteMoveCommandToBuffer( CLIENT_MOVE_COMMAND_s moveCMD )
+{
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( moveCMD.ulGametic );
+	// [CK] Send the server the latest known server-gametic
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( moveCMD.ulServerGametic );
+
+	// Decide what additional information needs to be sent.
+	ULONG ulBits = 0;
+	ticcmd_t *pCmd = &moveCMD.cmd;
 
 	if ( pCmd->ucmd.yaw )
 		ulBits |= CLIENT_UPDATE_YAW;
@@ -337,41 +358,79 @@ void CLIENTCOMMANDS_ClientMove( void )
 		ulBits |= CLIENT_UPDATE_UPMOVE;
 
 	// Tell the server what information we'll be sending.
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, ulBits );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( ulBits );
 
 	// Send the necessary movement/steering information.
 	if ( ulBits & CLIENT_UPDATE_YAW )
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.yaw );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( pCmd->ucmd.yaw );
 	if ( ulBits & CLIENT_UPDATE_PITCH )
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.pitch );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( pCmd->ucmd.pitch );
 	if ( ulBits & CLIENT_UPDATE_ROLL )
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.roll );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( pCmd->ucmd.roll );
 	if ( ulBits & CLIENT_UPDATE_BUTTONS )
 	{
 		if ( ulBits & CLIENT_UPDATE_BUTTONS_LONG )
-			NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.buttons );
+			CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( pCmd->ucmd.buttons );
 		else
-			NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.buttons );
+			CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( pCmd->ucmd.buttons );
 	}
 	if ( ulBits & CLIENT_UPDATE_FORWARDMOVE )
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.forwardmove );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( pCmd->ucmd.forwardmove );
 	if ( ulBits & CLIENT_UPDATE_SIDEMOVE )
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.sidemove );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( pCmd->ucmd.sidemove );
 	if ( ulBits & CLIENT_UPDATE_UPMOVE )
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, pCmd->ucmd.upmove );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( pCmd->ucmd.upmove );
 
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, players[consoleplayer].mo->angle );
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, players[consoleplayer].mo->pitch );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( players[consoleplayer].mo->angle );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( players[consoleplayer].mo->pitch );
 	// [BB] Send the checksum of our ticcmd we calculated when we originally generated the ticcmd from the user input.
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, g_sdwCheckCmd );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( moveCMD.sdwChecksum );
 
 	// Attack button.
 	if ( pCmd->ucmd.buttons & BT_ATTACK )
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( moveCMD.usWeaponNetworkIndex );
+}
+
+//*****************************************************************************
+//
+void CLIENTCOMMANDS_ClientMove( void )
+{
+	// [AK] Create the movement command for the current tic.
+	CLIENT_MOVE_COMMAND_s moveCMD = clientcommand_CreateMoveCommand( );
+
+	// [AK] If we don't want to send backup commands, send only this one and that's it.
+	if ( cl_backupcommands == 0 )
 	{
-		if ( players[consoleplayer].ReadyWeapon == NULL )
-			NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, 0 );
-		else
-			NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, players[consoleplayer].ReadyWeapon->GetClass( )->getActorNetworkIndex() );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CLIENTMOVE );
+		clientcommand_WriteMoveCommandToBuffer( moveCMD );
+	}
+	else
+	{
+		// [AK] Save the movement command from this tic for future use.
+		g_BackupMoveCMDs.put( moveCMD );
+
+		ULONG ulNumSavedCMDs = 0;
+		ULONG ulNumExpectedCMDs = cl_backupcommands + 1;
+
+		// [AK] Determine how many movement commands we now have saved in the buffer.
+		for ( unsigned int i = 0; i < MAX_BACKUP_COMMANDS; i++ )
+		{
+			if ( g_BackupMoveCMDs.getOldestEntry( i ).ulGametic != 0 )
+				ulNumSavedCMDs++;
+		}
+
+		ULONG ulNumCMDsToSend = MIN( ulNumSavedCMDs, ulNumExpectedCMDs );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CLIENTMOVEBACKUP );
+
+		// [AK] We need to tell the server the number of movement commands we sent.
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( ulNumCMDsToSend );
+
+		// [AK] Older movement commands must be written to the buffer before newer ones.
+		for ( int i = ulNumCMDsToSend; i >= 1; i-- )
+		{
+			moveCMD = g_BackupMoveCMDs.getOldestEntry( MAX_BACKUP_COMMANDS - i );
+			clientcommand_WriteMoveCommandToBuffer( moveCMD );
+		}
 	}
 }
 
@@ -383,7 +442,7 @@ void CLIENTCOMMANDS_MissingPacket( void )
 
 //*****************************************************************************
 //
-void CLIENTCOMMANDS_Pong( ULONG ulTime )
+void CLIENTCOMMANDS_Pong( unsigned int time )
 {
 	// [BB] CLIENTCOMMANDS_Pong is the only client command function that
 	// immediately launches a network packet. This is something that
@@ -396,9 +455,8 @@ void CLIENTCOMMANDS_Pong( ULONG ulTime )
 	// other commands tic-synced in CLIENT_EndTick().
 	NETBUFFER_s	TempBuffer;
 	TempBuffer.Init( MAX_UDP_PACKET, BUFFERTYPE_WRITE );
-	TempBuffer.Clear();
-	NETWORK_WriteByte( &TempBuffer.ByteStream, CLC_PONG );
-	NETWORK_WriteLong( &TempBuffer.ByteStream, ulTime );
+	TempBuffer.ByteStream.WriteByte( CLC_PONG );
+	TempBuffer.ByteStream.WriteLong( time );
 	NETWORK_LaunchPacket( &TempBuffer, NETWORK_GetFromAddress( ) );
 	TempBuffer.Free();
 }
@@ -410,22 +468,58 @@ void CLIENTCOMMANDS_WeaponSelect( const PClass *pType )
 	if ( ( pType == NULL ) || g_bIgnoreWeaponSelect )
 		return;
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_WEAPONSELECT );
-	NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, pType->getActorNetworkIndex() );
+	// [AK] If we don't want to send backup commands, send only this one and that's it.
+	if ( cl_backupcommands == 0 )
+	{
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_WEAPONSELECT );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( pType->getActorNetworkIndex() );
+	}
+	else
+	{
+		// [AK] Save the weapon class and the original time we sent out the command,
+		// which we'll use when we re-send the command.
+		g_pLastWeaponClass = pType;
+		g_ulLastWeaponSelectTime = gametic;
+
+		// [AK] Send out the backup command.
+		CLIENTCOMMANDS_SendBackupWeaponSelect( );
+	}
+}
+
+//*****************************************************************************
+//
+void CLIENTCOMMANDS_SendBackupWeaponSelect( void )
+{
+	if (( g_pLastWeaponClass == NULL ) || ( g_bIgnoreWeaponSelect ))
+		return;
+
+	// [AK] We don't want to send out this command more than we should (i.e. up to how
+	// many backup commands we can send). If the time that we originally sent this
+	// command is too far into the past, don't send it anymore.
+	if ( gametic - g_ulLastWeaponSelectTime > static_cast<ULONG>( cl_backupcommands ))
+		return;
+
+	// [AK] A backup version of a weapon select command is different from an ordinary
+	// CLC_WEAPONSELECT command, so we'll use a different CLC identifier for it. We must
+	// also send the gametic so the server knows exactly where this command should go
+	// in the client's tic buffer, or can ignore it if it's already been received.
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_WEAPONSELECTBACKUP );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( g_pLastWeaponClass->getActorNetworkIndex( ));
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( g_ulLastWeaponSelectTime );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_Taunt( void )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_TAUNT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_TAUNT );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_Spectate( void )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SPECTATE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SPECTATE );
 }
 
 //*****************************************************************************
@@ -434,32 +528,37 @@ void CLIENTCOMMANDS_RequestJoin( const char *pszJoinPassword )
 {
 	if (( sv_limitcommands ) && ( g_ulLastJoinTime > 0 ) && ( (ULONG)gametic < ( g_ulLastJoinTime + ( TICRATE * 3 ))))
 	{
-		Printf( "You must wait at least 3 seconds before joining again.\n" );
+		// [AK] Show the client how many more seconds they need to wait before they can join again.
+		Printf( "You must wait %d seconds before joining again.\n", static_cast<int>( 3 - ( gametic - g_ulLastJoinTime ) / TICRATE ));
 		return;
 	}
 
 	g_ulLastJoinTime = gametic;
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_REQUESTJOIN );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszJoinPassword );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_REQUESTJOIN );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszJoinPassword );
 
 	// [BB/Spleen] Send the gametic so that the client doesn't think it's lagging.
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, gametic );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( gametic );
 }
 
 //*****************************************************************************
 //
-void CLIENTCOMMANDS_RequestRCON( const char *pszRCONPassword )
+void CLIENTCOMMANDS_ChangeRCONStatus( const bool bIsLoggingIn, const char *pszRCONPassword )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_REQUESTRCON );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszRCONPassword );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CHANGERCONSTATUS );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( bIsLoggingIn );
+
+	// [AK] It's only necessary to send the RCON password if we're trying to log in.
+	if ( bIsLoggingIn )
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszRCONPassword );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_RCONCommand( const char *pszCommand )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_RCONCOMMAND );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszCommand );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_RCONCOMMAND );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszCommand );
 }
 
 //*****************************************************************************
@@ -468,12 +567,13 @@ void CLIENTCOMMANDS_Suicide( void )
 {
 	if (( sv_limitcommands ) && ( g_ulLastSuicideTime > 0 ) && ( (ULONG)gametic < ( g_ulLastSuicideTime + ( TICRATE * 10 ))))
 	{
-		Printf( "You must wait at least 10 seconds before suiciding again.\n" );
+		// [AK] Show the client how many more seconds they need to wait before they can suicide again.
+		Printf( "You must wait %d seconds before suiciding again.\n", static_cast<int>( 10 - ( gametic - g_ulLastSuicideTime ) / TICRATE ));
 		return;
 	}
 
 	g_ulLastSuicideTime = gametic;
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SUICIDE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SUICIDE );
 }
 
 //*****************************************************************************
@@ -482,48 +582,52 @@ void CLIENTCOMMANDS_ChangeTeam( const char *pszJoinPassword, LONG lDesiredTeam )
 {
 	if (( sv_limitcommands ) && !( ( lastmanstanding || teamlms ) && ( LASTMANSTANDING_GetState( ) == LMSS_COUNTDOWN ) ) && ( g_ulLastChangeTeamTime > 0 ) && ( (ULONG)gametic < ( g_ulLastChangeTeamTime + ( TICRATE * 3 ))))
 	{
-		Printf( "You must wait at least 3 seconds before changing teams again.\n" );
+		// [AK] Show the client how many more seconds they need to wait before they can change teams again.
+		Printf( "You must wait %d seconds before changing teams again.\n", static_cast<int>( 3 - ( gametic - g_ulLastChangeTeamTime ) / TICRATE ));
 		return;
 	}
 
 	g_ulLastChangeTeamTime = gametic;
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_CHANGETEAM );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszJoinPassword );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, lDesiredTeam );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CHANGETEAM );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszJoinPassword );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( lDesiredTeam );
+
+	// [AK] Send the gametic so that the client doesn't think it's lagging.
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( gametic );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_SpectateInfo( void )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SPECTATEINFO );
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, gametic );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SPECTATEINFO );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( gametic );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_GenericCheat( LONG lCheat )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_GENERICCHEAT );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, lCheat );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_GENERICCHEAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( lCheat );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_GiveCheat( char *pszItem, LONG lAmount )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_GIVECHEAT );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszItem );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, lAmount );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_GIVECHEAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszItem );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( lAmount );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_TakeCheat( const char *item, LONG amount )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_TAKECHEAT );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, item );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, amount );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_TAKECHEAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( item );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( amount );
 }
 
 //*****************************************************************************
@@ -540,26 +644,26 @@ void CLIENTCOMMANDS_SummonCheat( const char *pszItem, LONG lType, const bool bSe
 	default: return;
 	}
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, commandtype );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszItem );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, bSetAngle );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( commandtype );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszItem );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( bSetAngle );
 	if ( bSetAngle )
-		NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, sAngle );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( sAngle );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_ReadyToGoOn( void )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_READYTOGOON );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_READYTOGOON );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_ChangeDisplayPlayer( LONG lDisplayPlayer )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_CHANGEDISPLAYPLAYER );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, lDisplayPlayer );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CHANGEDISPLAYPLAYER );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( lDisplayPlayer );
 }
 
 //*****************************************************************************
@@ -572,31 +676,25 @@ void CLIENTCOMMANDS_AuthenticateLevel( void )
 //
 void CLIENTCOMMANDS_CallVote( LONG lVoteCommand, const char *pszArgument, const char *pszReason )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_CALLVOTE );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, lVoteCommand );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszArgument );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszReason );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CALLVOTE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( lVoteCommand );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszArgument );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszReason );
 }
 
 //*****************************************************************************
 //
-void CLIENTCOMMANDS_VoteYes( void )
+void CLIENTCOMMANDS_Vote( bool bVotedYes )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_VOTEYES );
-}
-
-//*****************************************************************************
-//
-void CLIENTCOMMANDS_VoteNo( void )
-{
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_VOTENO );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_VOTE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( bVotedYes );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_RequestInventoryUseAll( void )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_INVENTORYUSEALL );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_INVENTORYUSEALL );
 }
 
 //*****************************************************************************
@@ -608,8 +706,8 @@ void CLIENTCOMMANDS_RequestInventoryUse( AInventory *item )
 
 	const USHORT usActorNetworkIndex = item->GetClass( )->getActorNetworkIndex();
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_INVENTORYUSE );
-	NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, usActorNetworkIndex );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_INVENTORYUSE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( usActorNetworkIndex );
 }
 
 //*****************************************************************************
@@ -636,8 +734,8 @@ void CLIENTCOMMANDS_RequestInventoryDrop( AInventory *pItem )
 
 	g_ulLastDropTime = gametic;
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_INVENTORYDROP );
-	NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, usActorNetworkIndex );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_INVENTORYDROP );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( usActorNetworkIndex );
 }
 
 //*****************************************************************************
@@ -655,19 +753,35 @@ void CLIENTCOMMANDS_Puke ( int scriptNum, int args[4], bool always )
 
 	const int scriptNetID = NETWORK_ACSScriptToNetID( scriptNum );
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_PUKE );
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, scriptNetID );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_PUKE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( scriptNetID );
 
 	// [TP/BB] If we don't have a netID on file for this script, we send the name as a string.
 	if ( scriptNetID == NO_SCRIPT_NETID )
-		NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, FName( ENamedName( -scriptNum )));
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteString( FName( ENamedName( -scriptNum )));
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, argn );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( argn );
 
 	for ( int i = 0; i < argn; ++i )
-		NETWORK_WriteLong ( &CLIENT_GetLocalBuffer( )->ByteStream, args[i] );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( args[i] );
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, always );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( always );
+}
+
+//*****************************************************************************
+//
+void CLIENTCOMMANDS_ACSSendString ( int scriptNum, const char *pszString )
+{
+	const int scriptNetID = NETWORK_ACSScriptToNetID( scriptNum );
+
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_ACSSENDSTRING );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( scriptNetID );
+
+	// [AK] If we don't have a netID on file for this script, we send the name as a string.
+	if ( scriptNetID == NO_SCRIPT_NETID )
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteString( FName( ENamedName( -scriptNum )));
+
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszString );
 }
 
 //*****************************************************************************
@@ -683,80 +797,121 @@ void CLIENTCOMMANDS_MorphCheat ( const char *pszMorphClass )
 		return;
 	}
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_MORPHEX );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, pszMorphClass );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_MORPHEX );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( pszMorphClass );
 }
 
 //*****************************************************************************
 //
 void CLIENTCOMMANDS_FullUpdateReceived ( void )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_FULLUPDATE );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_FULLUPDATE );
 }
 
 //*****************************************************************************
 // [Dusk]
 void CLIENTCOMMANDS_InfoCheat( AActor* mobj, bool extended )
 {
-	if ( mobj == NULL || mobj->lNetID == -1 )
+	if ( mobj == NULL || mobj->NetID == 0 )
 		return;
 
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_INFOCHEAT );
-	NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, mobj->lNetID );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, extended );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_INFOCHEAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( mobj->NetID );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( extended );
 }
 
 //*****************************************************************************
 // [TP]
 void CLIENTCOMMANDS_WarpCheat( fixed_t x, fixed_t y )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_WARPCHEAT );
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, x );
-	NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, y );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_WARPCHEAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( x );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( y );
 }
 
 //*****************************************************************************
 // [TP]
 void CLIENTCOMMANDS_KillCheat( const char* what )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_KILLCHEAT );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, what );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_KILLCHEAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( what );
 }
 
 //*****************************************************************************
 // [TP]
 void CLIENTCOMMANDS_SpecialCheat( int special, const TArray<int> &args )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SPECIALCHEAT );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, special );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, args.Size() );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SPECIALCHEAT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( special );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( args.Size() );
 
 	for ( unsigned int i = 0; i < args.Size(); ++i )
-		NETWORK_WriteLong( &CLIENT_GetLocalBuffer( )->ByteStream, args[i] );
+		CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( args[i] );
 }
 
 //*****************************************************************************
-// [TP]
-void CLIENTCOMMANDS_SetWantHideAccount( bool wantHideAccount )
+// [TP/AK]
+void CLIENTCOMMANDS_SetWantHideInfo( const int info, const bool value )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SETWANTHIDEACCOUNT );
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, wantHideAccount );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SETWANTHIDEINFO );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( info );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( value );
 }
 
 //*****************************************************************************
 // [TP]
 void CLIENTCOMMANDS_SetVideoResolution()
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_SETVIDEORESOLUTION );
-	NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, SCREENWIDTH );
-	NETWORK_WriteShort( &CLIENT_GetLocalBuffer( )->ByteStream, SCREENHEIGHT );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SETVIDEORESOLUTION );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( SCREENWIDTH );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( SCREENHEIGHT );
 }
 
 //*****************************************************************************
 // [TP]
 void CLIENTCOMMANDS_RCONSetCVar( const char *cvarName, const char *cvarValue )
 {
-	NETWORK_WriteByte( &CLIENT_GetLocalBuffer( )->ByteStream, CLC_RCONSETCVAR );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, cvarName );
-	NETWORK_WriteString( &CLIENT_GetLocalBuffer( )->ByteStream, cvarValue );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_RCONSETCVAR );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( cvarName );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteString( cvarValue );
+}
+
+//*****************************************************************************
+// [AK]
+void CLIENTCOMMANDS_VoIPAudioPacket( const unsigned int frame, const unsigned char *data, const unsigned int length )
+{
+	if (( data == nullptr ) || ( length == 0 ))
+		return;
+
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_VOIPAUDIOPACKET );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( frame );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteShort( length );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteBuffer( data, length );
+}
+
+//*****************************************************************************
+// [AK]
+void CLIENTCOMMANDS_SetVoIPChannelVolume( const unsigned int player, const float volume )
+{
+	if ( PLAYER_IsValidPlayer( player ) == false )
+		return;
+
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_SETVOIPCHANNELVOLUME );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( player );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteFloat( volume );
+}
+
+//*****************************************************************************
+// [SB]
+void CLIENTCOMMANDS_ConversationReply( int selection )
+{
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CONVERSATIONREPLY );
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteLong( selection );
+}
+
+//*****************************************************************************
+// [SB]
+void CLIENTCOMMANDS_ConversationClose( )
+{
+	CLIENT_GetLocalBuffer( )->ByteStream.WriteByte( CLC_CONVERSATIONCLOSE );
 }

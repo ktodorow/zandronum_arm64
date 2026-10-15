@@ -155,7 +155,7 @@ void FMapInfoParser::ParseSkill ()
 		{
 			ParseAssign();
 			sc.MustGetFloat ();
-			skill.Aggressiveness = FRACUNIT - FLOAT2FIXED(clamp(sc.Float, (double)0.,(double)1.));
+			skill.Aggressiveness = FRACUNIT - FLOAT2FIXED(clamp(sc.Float, 0.,1.));
 		}
 		else if (sc.Compare("SpawnFilter"))
 		{

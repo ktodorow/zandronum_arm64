@@ -153,11 +153,7 @@ static DWORD Col2RGB8_2[63][256];
 // There's also only one, not four.
 DFrameBuffer *screen;
 
-#ifdef PANDORA
-CVAR (Int, vid_defwidth, 800, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
-#else
 CVAR (Int, vid_defwidth, 640, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
-#endif
 CVAR (Int, vid_defheight, 480, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Int, vid_defbits, 8, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 CVAR (Bool, vid_fps, false, 0)
@@ -1392,6 +1388,9 @@ bool V_DoModeSetup (int width, int height, int bits)
 	Renderer->OnModeSet();
 	
 	M_RefreshModesList ();
+
+	// [AK] Reset the virtual screen if the screen size changed.
+	C_UpdateVirtualScreen();
 
 	// [TP] Inform the server of our new resolution.
 	if ( NETWORK_GetState() == NETSTATE_CLIENT )

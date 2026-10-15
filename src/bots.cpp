@@ -56,6 +56,7 @@
 #include "cl_demo.h"
 #include "cmdlib.h"
 #include "configfile.h"
+#include "d_player.h"
 #include "deathmatch.h"
 #include "doomdef.h"
 #include "doomstat.h"
@@ -75,7 +76,7 @@
 #include "r_sky.h"
 #include "s_sound.h"
 #include "sc_man.h"
-#include "scoreboard.h"
+#include "st_hud.h"
 #include "st_stuff.h"
 #include "stats.h"
 #include "sv_commands.h"
@@ -88,6 +89,8 @@
 #include "p_trace.h"
 #include "sbar.h"
 #include "doomerrors.h"
+#include "chat.h"
+#include "scoreboard.h"
 
 //*****************************************************************************
 //	VARIABLES
@@ -484,6 +487,7 @@ bool BOTS_AddBotInfo( BOTINFO_s *pBotInfo )
 	sprintf( botInfo.szFavoriteWeapon,	"%s", pBotInfo->szFavoriteWeapon );
 	sprintf( botInfo.szClassName,			"%s", pBotInfo->szClassName );
 	sprintf( botInfo.szColor,				"%s", pBotInfo->szColor );
+	sprintf( botInfo.szColorSet, 			"%s", pBotInfo->szColorSet );
 	sprintf( botInfo.szGender,			"%s", pBotInfo->szGender );
 	sprintf( botInfo.szSkinName,			"%s", pBotInfo->szSkinName );
 	sprintf( botInfo.szName,				"%s", pBotInfo->szName );
@@ -515,7 +519,7 @@ void BOTS_ParseBotInfo( void )
 
 //*****************************************************************************
 //
-bool BOTS_IsValidName( char *pszName )
+bool BOTS_IsValidName( const char *pszName )
 {
 	if ( pszName == NULL )
 		return ( false );
@@ -547,7 +551,7 @@ ULONG BOTS_FindFreePlayerSlot( void )
 
 	// Don't allow us to add bots past the max. clients limit.
 	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) &&
-		( static_cast<LONG>(SERVER_CalcNumPlayers( )) >= sv_maxclients ))
+		( static_cast<LONG>( SERVER_CountPlayers( true )) >= sv_maxclients ))
 	{
 		return ( MAXPLAYERS );
 	}
@@ -583,26 +587,37 @@ void BOTS_RemoveBot( ULONG ulPlayerIdx, bool bExitMsg )
 		return;
 	}
 
+	// [AK] Clear all the saved chat messages this bot said.
+	CHAT_ClearChatMessages( ulPlayerIdx );
+
+	// [AK] Reset this player's custom values to their default values.
+	PLAYER_ResetCustomValues( ulPlayerIdx );
+
+	// [BB] Morphed bots need to be unmorphed before disconnecting.
+	// [AK] Using MORPH_UNDOBYTIMEOUT ensures this succeeds when they're invulnerable.
+	if ( players[ulPlayerIdx].morphTics )
+		P_UndoPlayerMorphWithoutFlash( &players[ulPlayerIdx], &players[ulPlayerIdx], MORPH_UNDOBYTIMEOUT, true );
+
+	// [RK] Stop the runing scripts for the bot.
+	FBehavior::StaticStopMyScripts (players[ulPlayerIdx].mo);
+
+	// If they're disconnecting while carrying an important item like a flag, etc.,
+	// make sure they drop it before leaving.
+	// [AK] This must be executed before telling the clients the player left.
+	if ( players[ulPlayerIdx].mo )
+		players[ulPlayerIdx].mo->DropImportantItems( true );
+
 	if ( bExitMsg )
 	{
 		if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-			Printf( PRINT_HIGH, "%s left the game.\n", players[ulPlayerIdx].userinfo.GetName() );
+			Printf( PRINT_HIGH, "%s left the game.\n", players[ulPlayerIdx].userinfo.GetName( ));
 		else
-			SERVER_Printf( "%s left the game.\n", players[ulPlayerIdx].userinfo.GetName() );
+			SERVER_Printf( "%s left the game.\n", players[ulPlayerIdx].userinfo.GetName( ));
 	}
-
-	// [BB] Morphed bots need to be unmorphed before disconnecting.
-	if (players[ulPlayerIdx].morphTics)
-		P_UndoPlayerMorph (&players[ulPlayerIdx], &players[ulPlayerIdx]);
 
 	// Remove the bot from the game.
 	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
 		SERVERCOMMANDS_DisconnectPlayer( ulPlayerIdx, ulPlayerIdx, SVCF_SKIPTHISCLIENT );
-
-	// If he's carrying an important item like a flag, etc., make sure he, 
-	// drops it before he leaves.
-	if ( players[ulPlayerIdx].mo )
-		players[ulPlayerIdx].mo->DropImportantItems( true );
 
 	// If this bot was eligible to get an assist, cancel that.
 	TEAM_CancelAssistsOfPlayer ( ulPlayerIdx );
@@ -615,6 +630,9 @@ void BOTS_RemoveBot( ULONG ulPlayerIdx, bool bExitMsg )
 	{
 		PLAYER_LeavesGame( ulPlayerIdx );
 	}
+
+	// [SB] Fire event scripts indicating this bot disconnected.
+	GAMEMODE_HandleEvent( GAMEEVENT_PLAYERLEAVESSERVER, nullptr, ulPlayerIdx, LEAVEREASON_KICKED );
 
 	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
 	{
@@ -659,7 +677,7 @@ void BOTS_RemoveBot( ULONG ulPlayerIdx, bool bExitMsg )
 	}
 
 	// Refresh the HUD since the number of players in the game is potentially changing.
-	SCOREBOARD_RefreshHUD( );
+	HUD_ShouldRefreshBeforeRendering( );
 
 	// [K6] If there are no more bots left, clear the bot nodes.
 	if ( BOTS_CountBots( ) == 0 && ASTAR_IsInitialized( ) )
@@ -677,6 +695,57 @@ void BOTS_RemoveAllBots( bool bExitMsg )
 	{
 		if ( playeringame[ulIdx] && players[ulIdx].pSkullBot && g_bBotIsInitialized[ulIdx] )
 			BOTS_RemoveBot( ulIdx, bExitMsg );
+	}
+}
+
+//*****************************************************************************
+//
+bool BOTS_RemoveRandomBot( void )
+{
+	unsigned int randomIndex = MAXPLAYERS;
+	bool botInGame = false;
+
+	// First, verify that there's a bot in the game.
+	for ( unsigned int i = 0; i < MAXPLAYERS; i++ )
+	{
+		if (( playeringame[i] ) && ( players[i].pSkullBot ))
+		{
+			botInGame = true;
+			break;
+		}
+	}
+
+	// If there isn't, return false.
+	if ( botInGame == false )
+		return false;
+
+	// Now randomly select a bot to remove.
+	do
+	{
+		randomIndex = ( BotRemove( ) % MAXPLAYERS );
+	} while (( playeringame[randomIndex] == false ) || ( players[randomIndex].pSkullBot == nullptr ));
+
+	// Now that we've found a valid bot, remove it.
+	BOTS_RemoveBot( randomIndex, true );
+	return true;
+}
+
+//*****************************************************************************
+//
+void BOTS_RemovePawnThinkers( SWORD botID )
+{
+	// [RK] The bot should have a NULL player at this point so we will remove
+	// its corpse thinkers to avoid any possible issue of them lingering around.
+	TThinkerIterator<APlayerPawn> it;
+	APlayerPawn* pawn, * next;
+
+	next = it.Next();
+	while ( (pawn = next) != NULL )
+	{
+		next = it.Next();
+
+		if (( pawn->player == NULL ) && ( botID == pawn->id ))
+			pawn->Destroy();
 	}
 }
 
@@ -999,6 +1068,7 @@ void bots_ParseBotInfoLump( FScanner &sc )
 		sprintf( BotInfo.szFavoriteWeapon, 	"pistol" );
 		sprintf( BotInfo.szClassName,		"random" );
 		sprintf( BotInfo.szColor,			"00 00 00" );
+		sprintf( BotInfo.szColorSet,		"custom" );
 		sprintf( BotInfo.szGender,			"male" );
 		sprintf( BotInfo.szName,			"UNNAMED BOT" );
 		BotInfo.szScriptName[0]				= 0;
@@ -1187,6 +1257,11 @@ void bots_ParseBotInfoLump( FScanner &sc )
 				strncpy( BotInfo.szColor, szValue, 15 );
 				BotInfo.szColor[15] = 0;
 			}
+			else if ( stricmp( szKey, "colorset" ) == 0 )
+			{
+				strncpy( BotInfo.szColorSet, szValue, 31 );
+				BotInfo.szColorSet[31] = 0;
+			}
 			else if ( stricmp( szKey, "gender" ) == 0 )
 			{
 				strncpy( BotInfo.szGender, szValue, 15 );
@@ -1367,6 +1442,16 @@ char *BOTINFO_GetColor( ULONG ulIdx )
 		return ( NULL );
 
 	return ( g_BotInfo[ulIdx].szColor );
+}
+
+//*****************************************************************************
+//
+char *BOTINFO_GetColorSet( ULONG ulIdx )
+{
+	if ( ulIdx >= g_BotInfo.Size() )
+		return ( NULL );
+
+	return ( g_BotInfo[ulIdx].szColorSet );
 }
 
 //*****************************************************************************
@@ -1572,7 +1657,7 @@ void BOTSPAWN_SetTicks( ULONG ulIdx, ULONG ulTicks )
 //*****************************************************************************
 //*****************************************************************************
 //
-CSkullBot::CSkullBot( char *pszName, char *pszTeamName, ULONG ulPlayerNum )
+CSkullBot::CSkullBot( const char *pszName, const char *pszTeamName, ULONG ulPlayerNum )
 {
 	ULONG	ulIdx;
 	char	szColorizedBuffer[256];
@@ -1620,7 +1705,7 @@ CSkullBot::CSkullBot( char *pszName, char *pszTeamName, ULONG ulPlayerNum )
 	m_ulLastEnemyPositionTick = 0;
 	m_bSkillIncrease = false;
 	m_bSkillDecrease = false;
-	m_ulLastMedalReceived = NUM_MEDALS;
+	m_lLastMedalReceived = -1;
 	m_lQueueHead = 0;
 	m_lQueueTail = 0;
 	for ( ulIdx = 0; ulIdx < MAX_STORED_EVENTS; ulIdx++ )
@@ -1673,8 +1758,16 @@ CSkullBot::CSkullBot( char *pszName, char *pszTeamName, ULONG ulPlayerNum )
 	m_pPlayer = &players[ulPlayerNum];
 	m_pPlayer->pSkullBot = this;
 	m_pPlayer->bIsBot = true;
-	m_pPlayer->bSpectating = false;
+
+	// [AK] Later on, PLAYER_ShouldSpawnAsSpectator gets called, which in turn
+	// calls GAMEMODE_PreventPlayersFromJoining and then DUEL_CountActiveDuelers.
+	// Thus, The bot's spectating status should be initialized to true, or else
+	// they could be prevented from joining.
+	m_pPlayer->bSpectating = true;
 	m_pPlayer->bDeadSpectator = false;
+
+	// [AK] Bots have a local connection to the host, so set their country index to LAN.
+	m_pPlayer->ulCountryIndex = COUNTRYINDEX_LAN;
 
 	// Update the playeringame slot.
 	playeringame[ulPlayerNum] = true;
@@ -1691,7 +1784,7 @@ CSkullBot::CSkullBot( char *pszName, char *pszTeamName, ULONG ulPlayerNum )
 	// Store the name of the skin the client gave us, so others can view the skin
 	// even if the server doesn't have the skin loaded.
 	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-		strncpy( SERVER_GetClient( ulPlayerNum )->szSkin, g_BotInfo[m_ulBotInfoIdx].szSkinName, MAX_SKIN_NAME + 1 );
+		SERVER_GetClient( ulPlayerNum )->skinName = g_BotInfo[m_ulBotInfoIdx].szSkinName;
 
 	LONG lSkin = R_FindSkin( g_BotInfo[m_ulBotInfoIdx].szSkinName, 0 );
 	m_pPlayer->userinfo.SkinNumChanged ( lSkin );
@@ -1706,13 +1799,45 @@ CSkullBot::CSkullBot( char *pszName, char *pszTeamName, ULONG ulPlayerNum )
 		skins[lSkin].bRevealed = true;
 	}
 
-	// See if the given class name matches one in the global list.
-	for ( ulIdx = 0; ulIdx < PlayerClasses.Size( ); ulIdx++ )
+	// [AK] Check if the bot should use a random player class whenever they spawn.
+	if ( stricmp( g_BotInfo[m_ulBotInfoIdx].szClassName, "Random" ) == 0 )
+		m_pPlayer->userinfo.PlayerClassNumChanged ( -1 );
+	else
 	{
-		if ( stricmp( g_BotInfo[m_ulBotInfoIdx].szClassName, PlayerClasses[ulIdx].Type->Meta.GetMetaString (APMETA_DisplayName)) == 0 )
+		bool foundClass = false;
+
+		// See if the given class name matches one in the global list.
+		for ( ulIdx = 0; ulIdx < PlayerClasses.Size( ); ulIdx++ )
 		{
-			m_pPlayer->userinfo.PlayerClassNumChanged ( ulIdx );
-			break;
+			if ( stricmp( g_BotInfo[m_ulBotInfoIdx].szClassName, PlayerClasses[ulIdx].Type->Meta.GetMetaString (APMETA_DisplayName)) == 0 )
+			{
+				m_pPlayer->userinfo.PlayerClassNumChanged ( ulIdx );
+				foundClass = true;
+				break;
+			}
+		}
+
+		// [AK] If no match was found, assign the bot a random class instead.
+		if ( foundClass == false )
+			m_pPlayer->userinfo.PlayerClassNumChanged ( -1 );
+	}
+
+
+	// [AK] Get all the color set indices this bot's class has.
+	if ( m_pPlayer->userinfo.GetPlayerClassNum( ) != -1 )
+	{
+		FName playerclass = m_pPlayer->userinfo.GetPlayerClassType( )->TypeName;
+		TArray<int> colorsets;
+		P_EnumPlayerColorSets( playerclass, &colorsets );
+
+		// [AK] See if the given color set name matches one of the class's color sets.
+		for ( ulIdx = 0; ulIdx < colorsets.Size( ); ulIdx++ )
+		{
+			if ( stricmp( g_BotInfo[m_ulBotInfoIdx].szColorSet, P_GetPlayerColorSet( playerclass, colorsets[ulIdx] )->Name.GetChars( )) == 0 )
+			{
+				m_pPlayer->userinfo.ColorSetChanged ( ulIdx );
+				break;
+			}
 		}
 	}
 
@@ -1920,8 +2045,11 @@ CSkullBot::CSkullBot( char *pszName, char *pszTeamName, ULONG ulPlayerNum )
 	if ( m_pPlayer->bSpectating )
 		PostEvent( BOTEVENT_SPECTATING );
 
+	// [AK] The bot has successfully joined the game, trigger an event script to indicate that.
+	GAMEMODE_HandleEvent( GAMEEVENT_PLAYERCONNECT, NULL, ulPlayerNum );
+
 	// Refresh the HUD since a new player is now here (this affects the number of players in the game).
-	SCOREBOARD_RefreshHUD( );
+	HUD_ShouldRefreshBeforeRendering( );
 }
 
 //*****************************************************************************
@@ -1957,7 +2085,7 @@ void CSkullBot::Tick( void )
 		return;
 
 	// [BB] Don't run their script if they are frozen either.
-	if ( ( m_pPlayer->cheats & CF_TOTALLYFROZEN ) || ( m_pPlayer->cheats & CF_FROZEN ) )
+	if ( m_pPlayer->cheats & CF_TOTALLYFROZEN )
 	{
 		// [BB] Don't freeze dead bots. Otherwise they can't respawn.
 		if ( m_pPlayer->mo && m_pPlayer->mo->health > 0 )
@@ -2002,10 +2130,20 @@ void CSkullBot::Tick( void )
 //
 void CSkullBot::EndTick( void )
 {
-	if ( m_bForwardMovePersist )
-		m_pPlayer->cmd.ucmd.forwardmove = static_cast<short> ( m_lForwardMove << 8 );
-	if ( m_bSideMovePersist )
-		m_pPlayer->cmd.ucmd.sidemove = static_cast<short> ( m_lSideMove << 8 );
+	// [AK] Don't allow the bot to move while frozen.
+	if (( m_pPlayer->cheats & CF_FROZEN ) == false )
+	{
+		if ( m_bForwardMovePersist )
+			m_pPlayer->cmd.ucmd.forwardmove = static_cast<short>( m_lForwardMove << 8 );
+
+		if ( m_bSideMovePersist )
+			m_pPlayer->cmd.ucmd.sidemove = static_cast<short>( m_lSideMove << 8 );
+	}
+	else
+	{
+		m_pPlayer->cmd.ucmd.forwardmove = m_pPlayer->cmd.ucmd.sidemove = 0;
+	}
+
 	m_pPlayer->cmd.ucmd.buttons |= m_lButtons;
 
 	g_BotCycles.Unclock();
@@ -2736,7 +2874,8 @@ void CSkullBot::ParseScript( void )
 				if (( lHighestVal < 0 ) || ( lHighestVal >= MAX_SCRIPTARRAY_SIZE ))
 					I_Error( "ParseScript: Invalid array maximum index, %d, in command \"arrayset\"!", static_cast<int> (lHighestVal) );
 
-				memset( m_ScriptData.alScriptArrays[lArray], lVal, lHighestVal * sizeof( LONG ));
+				for (int i = 0; i < lHighestVal; i++)
+					m_ScriptData.alScriptArrays[lArray][i] = lVal;
 				PopStack( );
 				PopStack( );
 				PopStack( );
@@ -3249,7 +3388,7 @@ void CSkullBot::PopStack( void )
 //
 void CSkullBot::PushToStringStack( char *pszString )
 {
-	sprintf( m_ScriptData.aszStringStack[m_ScriptData.lStringStackPosition++], "%s", pszString );
+	strncpy( m_ScriptData.aszStringStack[m_ScriptData.lStringStackPosition++], pszString, 256 );
 	
 	if ( botdebug_showstackpushes )
 		Printf( "PushToStringStack: %d\n", static_cast<int> (m_ScriptData.lStringStackPosition) );
@@ -3290,6 +3429,10 @@ void CSkullBot::PreDelete( void )
 	if ( m_pPlayer->mo )
 		m_pPlayer->mo->Destroy( );
 
+	// [RK] Remove the corpse's thinkers to prevent a crash later
+	if (( NETWORK_GetState() == NETSTATE_SINGLE || NETWORK_GetState() == NETSTATE_SINGLE_MULTIPLAYER ) && m_pPlayer->mo )
+		BOTS_RemovePawnThinkers(m_pPlayer->mo->id);
+
 	// Finally, fix some pointers.
 	// [BB] We have to delete the CSkullBot pointer before setting it to NULL.
 	//m_pPlayer->pSkullBot = NULL;
@@ -3301,7 +3444,7 @@ void CSkullBot::PreDelete( void )
 //
 void CSkullBot::HandleAiming( void )
 {
-	if (( m_bAimAtEnemy ) && ( m_ulPlayerEnemy != MAXPLAYERS ) && ( players[m_ulPlayerEnemy].mo ))
+	if (( m_bAimAtEnemy ) && ( m_ulPlayerEnemy != MAXPLAYERS ) && ( players[m_ulPlayerEnemy].mo ) && !(m_pPlayer->cheats & CF_TOTALLYFROZEN))
 	{
 		fixed_t	Distance;
 		fixed_t	ShootZ;
@@ -3535,8 +3678,6 @@ void CSkullBot::HandleAiming( void )
 			}
 		}
 	}
-	else
-		m_pPlayer->mo->pitch = 0;
 }
 
 //*****************************************************************************
@@ -3854,8 +3995,8 @@ CCMD( addbot )
 //
 CCMD( removebot )
 {
-	ULONG	ulIdx;
-	char	szName[64];
+	ULONG		ulIdx;
+	FString		playerName;
 
 	// Don't allow removing of bots in campaign mode.
 	if (( CAMPAIGN_InCampaign( )) && ( sv_cheats == false ))
@@ -3867,34 +4008,13 @@ CCMD( removebot )
 	// If we didn't input which bot to remove, remove a random one.
 	if ( argv.argc( ) < 2 )
 	{
-		ULONG	ulRandom;
-		bool	bBotInGame = false;
-
-		// First, verify that there's a bot in the game.
-		for ( ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
-		{
-			if (( playeringame[ulIdx] ) && ( players[ulIdx].pSkullBot ))
-			{
-				bBotInGame = true;
-				break;
-			}
-		}
-
-		// If there isn't, break.
-		if ( bBotInGame == false )
+		if ( BOTS_RemoveRandomBot( ) == false )
 		{
 			Printf( "No bots found.\n" );
+
+			// [RK] No bot? Nothing more to do.
 			return;
 		}
-
-		// Now randomly select a bot to remove.
-		do
-		{
-			ulRandom = ( BotRemove( ) % MAXPLAYERS );
-		} while (( playeringame[ulRandom] == false ) || ( players[ulRandom].pSkullBot == NULL ));
-
-		// Now that we've found a valid bot, remove it.
-		BOTS_RemoveBot( ulRandom, true );
 	}
 	else
 	{
@@ -3903,9 +4023,9 @@ CCMD( removebot )
 			if (( playeringame[ulIdx] == false ) || ( players[ulIdx].pSkullBot == NULL ))
 				continue;
 
-			sprintf( szName, "%s", players[ulIdx].userinfo.GetName() );
-			V_RemoveColorCodes( szName );
-			if ( stricmp( szName, argv[1] ) == 0 )
+			playerName = players[ulIdx].userinfo.GetName( );
+			V_RemoveColorCodes( playerName );
+			if ( playerName.CompareNoCase( argv[1] ) == 0 )
 			{
 				// Now that we've found a valid bot, remove it.
 				BOTS_RemoveBot( ulIdx, true );

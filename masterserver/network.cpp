@@ -176,7 +176,6 @@ void NETWORK_Construct( USHORT usPort, const char *pszIPAddress )
 	// can hold the biggest possible size we may get after decompressing (aka Huffman decoding)
 	// the incoming UDP packet.
 	g_NetworkMessage.Init( ((MAX_UDP_PACKET * 8) / 3 + 1), BUFFERTYPE_READ );
-	g_NetworkMessage.Clear();
 
 	// [BB] Get and save our local IP.
 	if ( ( ulInAddr == INADDR_ANY ) || ( pszIPAddress == NULL ) )
@@ -200,15 +199,15 @@ int NETWORK_GetPackets( void )
 {
 	LONG				lNumBytes;
 	INT					iDecodedNumBytes = sizeof(g_ucHuffmanBuffer);
-	struct sockaddr_in	SocketFrom;
+	sockaddr			SocketFrom;
 	INT					iSocketFromLength;
 
     iSocketFromLength = sizeof( SocketFrom );
 
 #ifdef	WIN32
-	lNumBytes = recvfrom( g_NetworkSocket, (char *)g_ucHuffmanBuffer, sizeof( g_ucHuffmanBuffer ), 0, (struct sockaddr *)&SocketFrom, &iSocketFromLength );
+	lNumBytes = recvfrom( g_NetworkSocket, (char *)g_ucHuffmanBuffer, sizeof( g_ucHuffmanBuffer ), 0, &SocketFrom, &iSocketFromLength );
 #else
-	lNumBytes = recvfrom( g_NetworkSocket, (char *)g_ucHuffmanBuffer, sizeof( g_ucHuffmanBuffer ), 0, (struct sockaddr *)&SocketFrom, (socklen_t *)&iSocketFromLength );
+	lNumBytes = recvfrom( g_NetworkSocket, (char *)g_ucHuffmanBuffer, sizeof( g_ucHuffmanBuffer ), 0, &SocketFrom, (socklen_t *)&iSocketFromLength );
 #endif
 
 	// If the number of bytes returned is -1, an error has occured.
@@ -249,7 +248,7 @@ int NETWORK_GetPackets( void )
 		return ( 0 );
 
 	// If the number of bytes we're receiving exceeds our buffer size, ignore the packet.
-	if ( lNumBytes >= g_NetworkMessage.ulMaxSize )
+	if ( lNumBytes >= static_cast<LONG>(g_NetworkMessage.ulMaxSize) )
 		return ( 0 );
 
 	// Decode the huffman-encoded message we received.
@@ -285,11 +284,12 @@ void NETWORK_LaunchPacket( NETBUFFER_s *pBuffer, NETADDRESS_s Address )
 		return;
 
 	// Convert the IP address to a socket address.
-	struct sockaddr_in SocketAddress = Address.ToSocketAddress();
+	struct sockaddr_in SocketAddress;
+	Address.ToSocketAddress( reinterpret_cast<sockaddr&>(SocketAddress) );
 
 	HUFFMAN_Encode( (unsigned char *)pBuffer->pbData, g_ucHuffmanBuffer, pBuffer->ulCurrentSize, &iNumBytesOut );
 
-	lNumBytes = sendto( g_NetworkSocket, (const char*)g_ucHuffmanBuffer, iNumBytesOut, 0, (struct sockaddr *)&SocketAddress, sizeof( SocketAddress ));
+	lNumBytes = sendto( g_NetworkSocket, (const char*)g_ucHuffmanBuffer, iNumBytesOut, 0, reinterpret_cast<sockaddr*>(&SocketAddress), sizeof( SocketAddress ));
 
 	// If sendto returns -1, there was an error.
 	if ( lNumBytes == -1 )

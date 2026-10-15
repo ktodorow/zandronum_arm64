@@ -36,6 +36,9 @@
 #include "p_effect.h"
 #include "sv_commands.h"
 #include "unlagged.h"
+#include "g_game.h"
+#include "p_tick.h"
+#include "cl_main.h"
 
 
 // MACROS ------------------------------------------------------------------
@@ -63,18 +66,60 @@
 
 // [SO] 1=Weapons states are all 1 tick
 //		2=states with a function 1 tick, others 0 ticks.
-CUSTOM_CVAR( Int, sv_fastweapons, 0, CVAR_SERVERINFO )
+// [AK] Added CVAR_GAMEPLAYSETTING.
+CUSTOM_CVAR( Int, sv_fastweapons, 0, CVAR_SERVERINFO | CVAR_GAMEPLAYSETTING )
 {
 	if ( self >= 3 )
 		self = 2;
 	if ( self < 0 )
 		self = 0;
 
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
-	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameModeLimits( );
-	}
+	// [AK] Notify the clients about the change.
+	SERVER_SettingChanged( self, false );
+}
+
+// [AK] CVars that control how the weapon bobs.
+CVAR( Bool, cl_alwaysbob, false, CVAR_ARCHIVE )
+CVAR( Bool, cl_usecustombob, false, CVAR_ARCHIVE )
+CVAR( Float, cl_bobspeed, 1.0f, CVAR_ARCHIVE )
+CVAR( Float, cl_stillbobspeed, 0.0f, CVAR_ARCHIVE )
+CVAR( Float, cl_stillbobrange, 0.0f, CVAR_ARCHIVE )
+
+// [AK] CVars that control how the weapon sways.
+CVAR( Bool, cl_usecustomsway, false, CVAR_ARCHIVE )
+CVAR( Float, cl_viewswayspeed, 0.0f, CVAR_ARCHIVE )
+CVAR( Float, cl_motionswayspeed, 0.0f, CVAR_ARCHIVE )
+CVAR( Float, cl_jumpswayspeed, 0.0f, CVAR_ARCHIVE )
+
+// [AK] CVars that control how the weapon offsets based on the player's pitch.
+CVAR( Bool, cl_usecustompitch, false, CVAR_ARCHIVE )
+CVAR( Float, cl_viewpitchoffset, 0.0f, CVAR_ARCHIVE )
+
+// [AK] Allows a different bob style to be used than what the weapon uses.
+CUSTOM_CVAR( Int, cl_bobstyle, AWeapon::BobNormal, CVAR_ARCHIVE )
+{
+	if (self < AWeapon::BobNormal)
+		self = AWeapon::BobNormal;
+	else if ( self > AWeapon::BobQuake )
+		self = AWeapon::BobQuake;
+}
+
+// [AK] Specifies how to sway the weapon depending on how the player looks around.
+CUSTOM_CVAR( Int, cl_swaystyle, WEAPON_SWAY_NORMAL, CVAR_ARCHIVE )
+{
+	if (self < WEAPON_SWAY_NORMAL)
+		self = WEAPON_SWAY_NORMAL;
+	else if (self > WEAPON_SWAY_HORIZONTALONLY)
+		self = WEAPON_SWAY_HORIZONTALONLY;
+}
+
+// [AK] Controls which parts of the player's pitch affect the offset of the weapon and how.
+CUSTOM_CVAR( Int, cl_viewpitchstyle, WEAPON_PITCH_FULL, CVAR_ARCHIVE )
+{
+	if (self < WEAPON_PITCH_FULL)
+		self = WEAPON_PITCH_FULL;
+	else if (self > WEAPON_PITCH_CENTERED)
+		self = WEAPON_PITCH_CENTERED;
 }
 
 // PRIVATE DATA DEFINITIONS ------------------------------------------------
@@ -231,6 +276,11 @@ void P_BringUpWeapon (player_t *player)
 	{
 		newstate = NULL;
 	}
+
+	// [AK] Save the last weapon the player was using before selecting the pending weapon.
+	if (( NETWORK_GetState() != NETSTATE_SERVER ) && ( player->ReadyWeapon != NULL ))
+		LastWeaponUsed = player->ReadyWeapon->GetClass();
+
 	player->PendingWeapon = WP_NOCHANGE;
 	player->ReadyWeapon = weapon;
 	player->psprites[ps_weapon].sy = player->cheats & CF_INSTANTWEAPSWITCH
@@ -458,8 +508,9 @@ void P_BobWeapon (player_t *player, pspdef_t *psp, fixed_t *x, fixed_t *y)
 	}
 
 	// [XA] Get the current weapon's bob properties.
-	int bobstyle = weapon->BobStyle;
-	int bobspeed = (weapon->BobSpeed * 128) >> 16;
+	// [AK] Adjust the bob style and speed to the client's preference if cl_usecustombob is enabled.
+	int bobstyle = cl_usecustombob ? cl_bobstyle : weapon->BobStyle;
+	int bobspeed = ((cl_usecustombob ? FLOAT2FIXED(cl_bobspeed) : weapon->BobSpeed) * 128) >> 16;
 	fixed_t rangex = weapon->BobRangeX;
 	fixed_t rangey = weapon->BobRangeY;
 
@@ -469,7 +520,8 @@ void P_BobWeapon (player_t *player, pspdef_t *psp, fixed_t *x, fixed_t *y)
 	// [RH] Smooth transitions between bobbing and not-bobbing frames.
 	// This also fixes the bug where you can "stick" a weapon off-center by
 	// shooting it when it's at the peak of its swing.
-	bobtarget = (player->WeaponState & WF_WEAPONBOBBING) ? player->bob : 0;
+	// [AK] Keep bobbing the weapon while firing if cl_alwaysbob is enabled.
+	bobtarget = ((player->WeaponState & WF_WEAPONBOBBING) || (cl_alwaysbob)) ? player->bob : 0;
 	if (curbob != bobtarget)
 	{
 		if (abs (bobtarget - curbob) <= 1*FRACUNIT)
@@ -524,12 +576,151 @@ void P_BobWeapon (player_t *player, pspdef_t *psp, fixed_t *x, fixed_t *y)
 		case AWeapon::BobInverseSmooth:
 			*x = FixedMul(bobx, finecosine[angle]);
 			*y = (FixedMul(boby, finecosine[angle*2 & (FINEANGLES-1)]) + boby) / 2;
+			break;
+
+		// [AK] Quake-styled bobbing originally made by Dark-Assassin.
+		case AWeapon::BobQuake:
+			*x = 0;
+			*y = FixedMul(boby, finesine[angle & (FINEANGLES/2-1)]);
+			break;
 		}
 	}
 	else
 	{
 		*x = 0;
 		*y = 0;
+	}
+
+	const fixed_t stillBobRange = (cl_usecustombob ? FLOAT2FIXED(cl_stillbobrange) : weapon->StillBobRange) - bobtarget;
+
+	// [AK] Also bob the weapon up and down while the player's standing still.
+	// Make the transition between "still" and "regular" bobbing smooth.
+	if (((player->WeaponState & WF_WEAPONBOBBING) || (cl_alwaysbob)) && (stillBobRange > 0))
+	{
+		const fixed_t stillBobSpeed = ((cl_usecustombob ? FLOAT2FIXED(cl_stillbobspeed) : weapon->StillBobSpeed) * 128) >> FRACBITS;
+		const fixed_t stillBobAngle = (stillBobSpeed * level.time) & FINEMASK;
+
+		*y += FixedMul(stillBobRange, finesine[stillBobAngle & (FINEANGLES / 2 - 1)]);
+	}
+
+	float viewSwaySpeed = 0.0f;
+	fixed_t motionSwaySpeed = 0;
+	fixed_t jumpSwaySpeed = 0;
+
+	// [AK] Choose between the client's settings or the weapon's properties.
+	if (cl_usecustomsway)
+	{
+		viewSwaySpeed = cl_viewswayspeed;
+		motionSwaySpeed = FLOAT2FIXED(cl_motionswayspeed);
+		jumpSwaySpeed = FLOAT2FIXED(cl_jumpswayspeed);
+	}
+	else
+	{
+		viewSwaySpeed = FIXED2FLOAT(weapon->ViewSwaySpeed);
+		motionSwaySpeed = weapon->MotionSwaySpeed;
+		jumpSwaySpeed = weapon->JumpSwaySpeed;
+	}
+
+	// [AK] Sway the weapon if any of the multipliers are non-zero values.
+	if ((viewSwaySpeed != 0.0f) || (motionSwaySpeed != 0) || (jumpSwaySpeed != 0))
+	{
+		static fixed_t swaypos[2];
+		static int lastSwayTime = 0;
+		const int swayStyle = cl_usecustomsway ? cl_swaystyle : weapon->SwayStyle;
+
+		// [AK] Don't reposition the sprite while the ticker is paused or while the server is lagging.
+		if ((lastSwayTime != level.time) && (paused == false) && (P_CheckTickerPaused() == false) && (CLIENT_GetServerLagging() == false))
+		{
+			fixed_t nswaypos[2] = {0, 0};
+
+			if (viewSwaySpeed != 0.0f)
+			{
+				nswaypos[0] += FLOAT2FIXED(FIXED2FLOAT(player->mo->AngleDelta) * viewSwaySpeed / 256.0f);
+				nswaypos[1] += FLOAT2FIXED(FIXED2FLOAT(player->mo->PitchDelta) * viewSwaySpeed / 256.0f);
+			}
+
+			// [AK] Add additional vertical sway when the player jumps in the air. Don't do this after
+			// the player's speed in the z-axis is greater than their jump speed.
+			if ((jumpSwaySpeed != 0) && (player->onground == false) && (player->jumpTics != 0) && (abs(player->mo->velz) <= player->mo->CalcJumpVelz()))
+			{
+				nswaypos[1] += FixedMul(player->mo->velz, jumpSwaySpeed);
+			}
+			// [AK] Add additional vertical sway when the player moves and/or crouches up or down.
+			else if (motionSwaySpeed != 0)
+			{
+				const fixed_t zDiffMax = FixedMul(10 << FRACBITS, motionSwaySpeed);
+				const fixed_t zDiff = clamp<fixed_t>(player->mo->z - player->mo->PrevZ, -zDiffMax, zDiffMax);
+
+				nswaypos[1] += FixedMul(zDiff + player->crouchviewdelta / 2, motionSwaySpeed);
+			}
+
+			for (int i = 0; i <= 1; i++)
+			{
+				if (abs(nswaypos[i] - swaypos[i]) <= 256)
+				{
+					swaypos[i] = nswaypos[i];
+				}
+				else
+				{
+					fixed_t zoom = MAX<fixed_t>(256, abs(swaypos[i] - nswaypos[i]) / 10);
+					swaypos[i] += zoom * (swaypos[i] > nswaypos[i] ? -1 : 1);
+				}
+			}
+
+			lastSwayTime = level.time;
+		}
+
+		*x += swaypos[0];
+
+		switch (swayStyle)
+		{
+		case WEAPON_SWAY_NORMAL:
+			*y += swaypos[1];
+			break;
+
+		case WEAPON_SWAY_DOWNONLY:
+			*y += MAX<fixed_t>(0, swaypos[1]);
+			break;
+
+		case WEAPON_SWAY_UPONLY:
+			*y += MIN<fixed_t>(0, swaypos[1]);
+			break;
+		}
+	}
+
+	int viewpitchstyle = cl_usecustompitch ? cl_viewpitchstyle : weapon->ViewPitchStyle;
+	float viewpitchoffset = cl_usecustompitch ? cl_viewpitchoffset : FIXED2FLOAT(weapon->ViewPitchOffset);
+
+	// [AK] Offset the weapon based on the player's pitch if the multiplier is a non-zero value.
+	if (viewpitchoffset != 0.0f)
+	{
+		fixed_t halfmin = FIXED_MIN >> 1;
+		fixed_t value = 0;
+
+		switch (viewpitchstyle)
+		{
+		case WEAPON_PITCH_FULL:
+			value = FixedDiv(halfmin + player->mo->pitch, FIXED_MIN);
+			break;
+
+		case WEAPON_PITCH_UPONLY:
+			value = FixedDiv(MIN<fixed_t>(0, player->mo->pitch), halfmin);
+			break;
+
+		case WEAPON_PITCH_DOWNONLY:
+			value = -FixedDiv(MAX<fixed_t>(0, player->mo->pitch), halfmin);
+			break;
+
+		case WEAPON_PITCH_DOWNANDUP:
+			value = -FixedDiv(abs(player->mo->pitch), halfmin);
+			break;
+
+		case WEAPON_PITCH_CENTERED: // [JM] Dark Forces style, where facing forward is no offset.
+			value = -FixedDiv(player->mo->pitch, halfmin);
+			break;
+		}
+
+		*y -= FixedMul(value, FLOAT2FIXED(viewpitchoffset)) + MIN<fixed_t>(0, FLOAT2FIXED(viewpitchoffset));
 	}
 }
 
@@ -737,7 +928,8 @@ void P_CheckWeaponSwitch (player_t *player)
 		return;
 	}
 	if ((player->WeaponState & WF_DISABLESWITCH) || // Weapon changing has been disabled.
-		player->morphTics != 0)					// Morphed classes cannot change weapons.
+		( player->morphTics != 0 && // Morphed classes cannot change weapons.
+		!( player->mo && (player->mo->PlayerFlags & PPF_NOMORPHLIMITATIONS) ) )) // [geNia] unless +NOMORPHLIMITATIONS is used
 	{ // ...so throw away any pending weapon requests.
 		player->PendingWeapon = WP_NOCHANGE;
 	}
@@ -895,7 +1087,8 @@ DEFINE_ACTION_FUNCTION(AInventory, A_Lower)
 		return;
 	}
 
-	if (player->morphTics || player->cheats & CF_INSTANTWEAPSWITCH)
+	// [Binary] Allow morphs to switch weapons if +NOMORPHLIMITATIONS is used.
+	if ( ( player->morphTics && !( player->mo && (player->mo->PlayerFlags & PPF_NOMORPHLIMITATIONS) ) ) || player->cheats & CF_INSTANTWEAPSWITCH)
 	{
 		psp->sy = WEAPONBOTTOM;
 	}
@@ -964,22 +1157,17 @@ DEFINE_ACTION_FUNCTION(AInventory, A_Raise)
 
 	// [BC] If this player has respawn invulnerability, disable it if they're done raising
 	// a weapon that isn't the pistol or their fist.
-	if (( player->mo ) &&
-		( NETWORK_InClientMode() == false ))
+	if ((player->mo) && (NETWORK_InClientMode() == false))
 	{
-		APowerInvulnerable	*pInvulnerability;
+		APowerRespawnInvulnerable *invul = static_cast<APowerRespawnInvulnerable *>(player->mo->FindInventory (RUNTIME_CLASS(APowerRespawnInvulnerable)));
 
-		pInvulnerability = static_cast<APowerInvulnerable *>( player->mo->FindInventory( RUNTIME_CLASS( APowerInvulnerable )));
-		if (( pInvulnerability ) &&
-			( player->ReadyWeapon ) &&
-			(( player->ReadyWeapon->WeaponFlags & WIF_ALLOW_WITH_RESPAWN_INVUL ) == false ) &&
-			(( player->mo->effects & FX_VISIBILITYFLICKER ) || ( player->mo->effects & FX_RESPAWNINVUL )))
+		if ((invul) && (player->ReadyWeapon) && ((player->ReadyWeapon->WeaponFlags & WIF_ALLOW_WITH_RESPAWN_INVUL) == false))
 		{
-			pInvulnerability->Destroy( );
+			invul->Destroy();
 
 			// If we're the server, tell clients to take this player's powerup away.
-			if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-				SERVERCOMMANDS_TakeInventory( ULONG( player - players ), RUNTIME_CLASS( APowerInvulnerable ), 0 );
+			if (NETWORK_GetState() == NETSTATE_SERVER)
+				SERVERCOMMANDS_TakeInventory (static_cast<unsigned>(player - players), RUNTIME_CLASS(APowerRespawnInvulnerable), 0);
 		}
 	}
 }
@@ -1030,7 +1218,8 @@ void A_GunFlash(AActor *self, FState *flash, const int Flags)
 		}
 	}
 
-	if (flash == NULL)
+	// [BB] In a crash log, client_GiveInventory was calling this with ReadyWeapon == NULL when giving some CustomInventory. 
+	if (flash == NULL && player->ReadyWeapon)
 	{
 		if (player->ReadyWeapon->bAltFire) flash = player->ReadyWeapon->FindState(NAME_AltFlash);
 		if (flash == NULL) flash = player->ReadyWeapon->FindState(NAME_Flash);

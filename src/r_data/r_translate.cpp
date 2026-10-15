@@ -405,12 +405,12 @@ void FRemapTable::AddColorRange(int start, int end, int _r1,int _g1, int _b1, in
 
 void FRemapTable::AddDesaturation(int start, int end, double r1, double g1, double b1, double r2, double g2, double b2)
 {
-	r1 = clamp<double>(r1, 0.0, 2.0);
-	g1 = clamp<double>(g1, 0.0, 2.0);
-	b1 = clamp<double>(b1, 0.0, 2.0);
-	r2 = clamp<double>(r2, 0.0, 2.0);
-	g2 = clamp<double>(g2, 0.0, 2.0);
-	b2 = clamp<double>(b2, 0.0, 2.0);
+	r1 = clamp(r1, 0.0, 2.0);
+	g1 = clamp(g1, 0.0, 2.0);
+	b1 = clamp(b1, 0.0, 2.0);
+	r2 = clamp(r2, 0.0, 2.0);
+	g2 = clamp(g2, 0.0, 2.0);
+	b2 = clamp(b2, 0.0, 2.0);
 
 	if (start > end)
 	{

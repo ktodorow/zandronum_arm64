@@ -116,18 +116,17 @@ CUSTOM_CVAR(Bool, fluid_chorus, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 		currSong->FluidSettingInt("synth.chorus.active", self);
 }
 
-//*SEB Plyphony: 32 is enough, 128 is overkill for Pandora.
-CUSTOM_CVAR(Int, fluid_voices, 32, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Int, fluid_voices, 128, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 {
 	if (self < 16)
 		self = 16;
-	else if (self > 64)
-		self = 64;
+	else if (self > 4096)
+		self = 4096;
 	else if (currSong != NULL)
 		currSong->FluidSettingInt("synth.polyphony", self);
 }
 
-CUSTOM_CVAR(Int, fluid_interp, 0, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
+CUSTOM_CVAR(Int, fluid_interp, 1, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 {
 	// Values are: 0 = FLUID_INTERP_NONE
 	//             1 = FLUID_INTERP_LINEAR
@@ -296,9 +295,9 @@ FluidSynthMIDIDevice::FluidSynthMIDIDevice()
 		fluid_chorus_speed, fluid_chorus_depth, fluid_chorus_type);
 	if (0 == LoadPatchSets(fluid_patchset))
 	{
-#if 1 //def unix
-		// This is the standard location on ZDoom for Pandora :).
-		if (0 == LoadPatchSets("/mnt/utmp/zdoom/share/FluidR3_GS.sf2:/mnt/utmp/zdoom/share/TimGM6mb.sf2"))
+#ifdef __unix__
+		// This is the standard location on Ubuntu.
+		if (0 == LoadPatchSets("/usr/share/sounds/sf2/FluidR3_GS.sf2:/usr/share/sounds/sf2/FluidR3_GM.sf2"))
 		{
 #endif
 #ifdef _WIN32

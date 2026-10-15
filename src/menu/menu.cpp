@@ -63,6 +63,9 @@
 #include "cooperative.h"
 #include "deathmatch.h"
 #include "cl_main.h"
+#include "cl_demo.h"
+#include "cl_commands.h"
+#include "network/cl_auth.h"
 
 //
 // Todo: Move these elsewhere
@@ -89,6 +92,9 @@ int				BackbuttonTime;
 fixed_t			BackbuttonAlpha;
 static bool		MenuEnabled = true;
 
+// [AK] Are we in the server setup menu?
+static DMenu	*ServerSetupMenu = NULL;
+static bool		ServerMenuEnabled = false;
 
 #define KEY_REPEAT_DELAY	(TICRATE*5/12)
 #define KEY_REPEAT_RATE		(3)
@@ -182,6 +188,14 @@ bool DMenu::MenuEvent (int mkey, bool fromcontroller)
 void DMenu::Close ()
 {
 	assert(DMenu::CurrentMenu == this);
+
+	// [AK] Check if we're closing the server setup menu.
+	if ( DMenu::CurrentMenu == ServerSetupMenu )
+	{
+		ServerSetupMenu = NULL;
+		ServerMenuEnabled = false;
+	}
+
 	DMenu::CurrentMenu = mParentMenu;
 	Destroy();
 	if (DMenu::CurrentMenu != NULL)
@@ -327,6 +341,10 @@ void M_StartControlPanel (bool makeSound)
 	}
 	BackbuttonTime = 0;
 	BackbuttonAlpha = 0;
+
+	// [BB] Don't change the displayed menu status when a demo is played.
+	if ( CLIENTDEMO_IsPlaying( ) == false )
+		PLAYER_SetStatus( &players[consoleplayer], PLAYERSTATUS_INMENU, true, SETPLAYERSTATUS_CLIENTSENDSUPDATE );
 }
 
 //=============================================================================
@@ -472,11 +490,35 @@ void M_SetMenu(FName menu, int param)
 			M_StartMessage (GStrings("SAVEDEAD"), 1);
 			return;
 		}
+		break;
 
 	case NAME_ZA_ServerSetupMenu:
 		// [TP] Make the server setup menu redirect to RCON login if not logged in yet
 		if (( NETWORK_GetState() == NETSTATE_CLIENT ) && ( CLIENT_HasRCONAccess() == false ))
 			menu = NAME_ZA_RconLoginMenu;
+		break;
+
+	case NAME_ZA_LoginMenu:
+		// [AK] Prevent the login menu from opening if the client is already logged in.
+		if (( NETWORK_GetState() == NETSTATE_CLIENT ) && ( CLIENT_IsLoggedIn()))
+		{
+			M_StartMessage( "You are already logged in.\n\npress a key.", 1 );
+			return;
+		}
+
+#ifdef WIN32
+		FBaseCVar *usernameCVar = FindCVar( "menu_authusername", nullptr );
+
+		// [AK] Set the username in the login menu to the client's default username when the menu's opened
+		// for the first time (i.e. "menu_authusername" hasn't been changed yet).
+		if (( usernameCVar != nullptr ) && ( strlen( usernameCVar->GetGenericRep( CVAR_String ).String ) == 0 ))
+		{
+			UCVarValue val;
+			val.String = login_default_user.GetGenericRep( CVAR_String ).String;
+			usernameCVar->SetGenericRep( val, CVAR_String );
+		}
+#endif
+
 		break;
 	}
 
@@ -521,8 +563,25 @@ void M_SetMenu(FName menu, int param)
 				return;
 			}
 
+			// [AK] Prevent clients without RCON access from opening this menu.
+			if ( ld->mRequiresRCON )
+			{
+				if (( NETWORK_GetState() == NETSTATE_CLIENT ) && ( CLIENT_HasRCONAccess() == false ))
+				{
+					M_StartMessage( "You must have RCON access to use this menu.\n\npress a key.", 1 );
+					return;
+				}
+
+				ServerMenuEnabled = true;
+			}
+
 			DOptionMenu *newmenu = (DOptionMenu *)cls->CreateNew();
 			newmenu->Init(DMenu::CurrentMenu, ld);
+
+			// [AK] Check if we're opening the server setup menu.
+			if ( menu == NAME_ZA_ServerSetupMenu )
+				ServerSetupMenu = newmenu;
+
 			M_ActivateMenu(newmenu);
 		}
 		return;
@@ -826,6 +885,14 @@ void M_ClearMenus ()
 	D_SendPendingUserinfoChanges(); // [TP]
 	V_SetBorderNeedRefresh();
 	menuactive = MENU_Off;
+
+	// [AK] If we're not in a menu, then we're obviously not in the server setup menu.
+	ServerSetupMenu = NULL;
+	ServerMenuEnabled = false;
+
+	// [BB] Don't change the displayed menu status when a demo is played.
+	if ( CLIENTDEMO_IsPlaying( ) == false )
+		PLAYER_SetStatus( &players[consoleplayer], PLAYERSTATUS_INMENU, false, SETPLAYERSTATUS_CLIENTSENDSUPDATE );
 }
 
 //=============================================================================
@@ -852,6 +919,38 @@ void M_EnableMenu (bool on)
 	MenuEnabled = on;
 }
 
+//=============================================================================
+//
+// [AK] Returns true if we're in the server setup menu or its submenus.
+//
+//=============================================================================
+
+bool M_InServerSetupMenu (void)
+{
+	return ServerMenuEnabled;
+}
+
+//=============================================================================
+//
+// [AK] Returns true if the given name points to a valid menu, or false otherwise.
+//
+//=============================================================================
+
+bool M_IsValidMenu( const char *name )
+{
+	if (( name == nullptr ) || ( strlen( name ) == 0 ))
+		return false;
+
+	if ( MenuDescriptors.CheckKey( name ) == nullptr )
+	{
+		const PClass *menuClass = PClass::FindClass( name );
+
+		if (( menuClass == nullptr ) || ( menuClass->IsDescendantOf( RUNTIME_CLASS( DMenu )) == false ))
+			return false;
+	}
+
+	return true;
+}
 
 //=============================================================================
 //

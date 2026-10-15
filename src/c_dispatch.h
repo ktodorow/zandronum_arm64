@@ -53,6 +53,9 @@ public:
 	// [TP]
 	bool SafeGetNumber( int i, int &value, const char *errormessage = "That is not a valid player index" );
 
+	// [AK]
+	bool GetPlayerFromArg( int &playerIndex, const int i, const bool isIndexCmd, const bool ignoreBots = false );
+
 private:
 	const char *cmd;
 	int _argc;
@@ -130,6 +133,22 @@ protected:
 	FConsoleCommand Cmd_##n##_Ref (#n, Cmd_##n); \
 	void Cmd_##n (FCommandLine &argv, APlayerPawn *who, int key)
 
+class FUnsafeConsoleCommand : public FConsoleCommand
+{
+public:
+	FUnsafeConsoleCommand (const char *name, CCmdRun RunFunc)
+	: FConsoleCommand (name, RunFunc)
+	{
+	}
+
+	virtual void Run (FCommandLine &args, APlayerPawn *instigator, int key) override;
+};
+
+#define UNSAFE_CCMD(n) \
+	static void Cmd_##n (FCommandLine &, APlayerPawn *, int key); \
+	static FUnsafeConsoleCommand Cmd_##n##_Ref (#n, Cmd_##n); \
+	void Cmd_##n (FCommandLine &argv, APlayerPawn *who, int key)
+
 const int KEY_DBLCLICKED = 0x8000;
 
 class FConsoleAlias : public FConsoleCommand
@@ -148,6 +167,17 @@ protected:
 	bool bDoSubstitution;
 	bool bRunning;
 	bool bKill;
+};
+
+class FUnsafeConsoleAlias : public FConsoleAlias
+{
+public:
+	FUnsafeConsoleAlias (const char *name, const char *command)
+	: FConsoleAlias (name, command, true)
+	{
+	}
+
+	virtual void Run (FCommandLine &args, APlayerPawn *instigator, int key) override;
 };
 
 // Actions
@@ -176,8 +206,9 @@ extern FButtonStatus Button_Mlook, Button_Klook, Button_Use, Button_AltAttack,
 	Button_User1, Button_User2, Button_User3, Button_User4,
 	Button_AM_PanLeft, Button_AM_PanRight, Button_AM_PanDown, Button_AM_PanUp,
 	Button_AM_ZoomIn, Button_AM_ZoomOut,
-	Button_ShowMedals;	// [BC] New "show medals" button.
-extern bool ParsingKeyConf;
+	Button_VoiceRecord,	// [AK] Added the "voicerecord" button.
+	Button_SB_ScrollUp, Button_SB_ScrollDn; // [AK] Added "sb_scrollup" and "sb_scrolldn" buttons.
+extern bool ParsingKeyConf, UnsafeExecutionContext;
 
 void ResetButtonTriggers ();	// Call ResetTriggers for all buttons
 void ResetButtonStates ();		// Same as above, but also clear bDown

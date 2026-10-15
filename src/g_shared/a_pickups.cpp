@@ -29,11 +29,12 @@
 #include "cl_commands.h"
 #include "cl_demo.h"
 #include "announcer.h"
-#include "scoreboard.h"
+#include "st_hud.h"
 #include "gamemode.h"
 #include "cooperative.h"
 #include "p_acs.h"
 #include "a_keys.h"
+#include "d_dehacked.h"
 
 static FRandom pr_restore ("RestorePos");
 
@@ -229,6 +230,10 @@ bool P_GiveBody (AActor *actor, int num, int max)
 	num = clamp(num, -65536, 65536);	// prevent overflows for bad values
 	if (player != NULL)
 	{
+		// [AK] Don't give this player health if we're not allowed to know their actual health.
+		if (( NETWORK_InClientMode( )) && ( SERVER_IsPlayerAllowedToKnowHealth( consoleplayer, player - players ) == false ))
+			return false;
+
 		// Max is 0 by default, preserving default behavior for P_GiveBody()
 		// calls while supporting AHealth.
 		if (max <= 0)
@@ -238,7 +243,7 @@ bool P_GiveBody (AActor *actor, int num, int max)
 				max = deh.MaxSoulsphere + 50;
 			// [BC] Add the player's max. health bonus to his max.
 			else
-				max = static_cast<APlayerPawn*>(actor)->GetMaxHealth() + player->mo->stamina + player->lMaxHealthBonus;
+				max = static_cast<APlayerPawn*>(actor)->GetMaxHealth() + player->mo->stamina + player->MaxHealthBonus;
 			// [MH] First step in predictable generic morph effects
  			if (player->morphTics)
  			{
@@ -562,7 +567,7 @@ bool AInventory::ShouldRespawn ()
 
 	if ((ItemFlags & IF_BIGPOWERUP) && !(dmflags & DF_RESPAWN_SUPER)) return false;
 	if (ItemFlags & IF_NEVERRESPAWN) return false;
-	return !!(dmflags & DF_ITEMS_RESPAWN);
+	return !!((dmflags & DF_ITEMS_RESPAWN) || (ItemFlags & IF_ALWAYSRESPAWN));
 }
 
 //===========================================================================
@@ -718,7 +723,7 @@ bool AInventory::GoAway ()
 		// [BB] If the map resets and this item is level spawned but not supposed to
 		// be respawned regularly, we need to make sure that the item doesn't respawn,
 		// but still allow it to return when the map resets.
-		else if ( ( ulSTFlags & STFL_LEVELSPAWNED ) && ( GAMEMODE_GetCurrentFlags() & GMF_MAPRESETS ) )
+		else if ( ( STFlags & STFL_LEVELSPAWNED ) && ( GAMEMODE_GetCurrentFlags() & GMF_MAPRESETS ) )
 		{
 			HideIndefinitely( );
 			return true;
@@ -1084,6 +1089,8 @@ static void PrintPickupMessage (const char *str)
 void AInventory::Touch (AActor *toucher)
 {
 	AInventory	*pInventory;
+	// [RK] Added for handling of DEHACKED keys
+	AInventory *realItem = NULL;
 
 	// [BC] If this item was a bot's goal item, and it's reaching it, let the bot know that.
 	if ( toucher->player && toucher->player->pSkullBot )
@@ -1208,6 +1215,13 @@ void AInventory::Touch (AActor *toucher)
 	}
 
 	// [RH] Execute an attached special (if any)
+	// [RK] If the pickup is a DEHACKED item that replaces a key we'll grab the
+	// info of the real key before the pickup is destroyed in DoPickupSpecial.
+	if ( GetClass()->IsDescendantOf( RUNTIME_CLASS( ADehackedPickup )) && GetClass()->ActorInfo->GetReplacee()->Class->IsDescendantOf( RUNTIME_CLASS( AKey )))
+		realItem = static_cast< ADehackedPickup* >( this )->GetRealPickup();
+	else
+		realItem = this;
+
 	DoPickupSpecial (toucher);
 
 	// [BC] If this item was spawned from an invasion spot, tell the spot that the item
@@ -1258,22 +1272,22 @@ void AInventory::Touch (AActor *toucher)
 
 	// [BC] Finally, refresh the HUD.
 	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-		SCOREBOARD_RefreshHUD( );
+		HUD_ShouldRefreshBeforeRendering( );
 
 	// [Dusk] If it's a key, share it to others if sv_sharekeys is on. Note:
 	// we store the key as having been found even if shared keys is off. This
 	// way the server still remembers what keys were found and begins sharing
 	// them when sv_sharekeys is toggled on.
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) &&
-		( IsKindOf( RUNTIME_CLASS( AKey ))) &&
-		( toucher->player != NULL ))
+	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( toucher->player != NULL ) && ( realItem != NULL ) &&
+		( realItem->IsKindOf( RUNTIME_CLASS( AKey )) ||
+		realItem->GetClass()->IsDescendantOf( RUNTIME_CLASS( APuzzleItem )))) // [RK] Hexen Puzzle item class
 	{
 		// [Dusk] Check if the key has not been picked up yet.
 		bool pickedup = false;
 
 		for ( unsigned int i = 0; i < g_keysFound.Size(); ++i )
 		{
-			if ( g_keysFound[i] == GetClass()->getActorNetworkIndex() )
+			if( g_keysFound[i] == realItem->GetClass()->getActorNetworkIndex() )
 			{
 				pickedup = true;
 				break;
@@ -1285,13 +1299,13 @@ void AInventory::Touch (AActor *toucher)
 			// [Dusk] Store this key as having been found. For some reason
 			// storing the raw PClass pointer crashes Zandronum when sharing
 			// the keys later on so we store the actor network index instead.
-			g_keysFound.Push( GetClass()->getActorNetworkIndex() );
+			g_keysFound.Push( realItem->GetClass()->getActorNetworkIndex() );
 
 			if ( zadmflags & ZADF_SHARE_KEYS )
 			{
 				// [Dusk] Announcement message
 				SERVER_Printf( TEXTCOLOR_GREEN "%s" TEXTCOLOR_NORMAL " has found the " TEXTCOLOR_GOLD "%s!\n",
-					toucher->player->userinfo.GetName(), GetTag() );
+					toucher->player->userinfo.GetName(), realItem->GetTag() );
 
 				// [Dusk] Audio cue - skip the player picking the key because he
 				// hears the pickup sound from the original key. The little *bloop*
@@ -1971,12 +1985,12 @@ bool AMaxHealth::TryPickup( AActor *&pOther )
 	if ( pPlayer != NULL )
 	{
 		// Increase the player's max. health.
-		pPlayer->lMaxHealthBonus += Amount;
+		pPlayer->MaxHealthBonus += Amount;
 
 		// If it exceeds the maximum amount allowable by this object, cap it. The default
 		// is 50.
-		if ( pPlayer->lMaxHealthBonus > MaxAmount )
-			pPlayer->lMaxHealthBonus = MaxAmount;
+		if ( pPlayer->MaxHealthBonus > MaxAmount )
+			pPlayer->MaxHealthBonus = MaxAmount;
 	}
 
 	// [BC] The rest of this is based on AHealth::TryPickup. It just has to be different
@@ -1997,13 +2011,13 @@ bool AMaxHealth::TryPickup( AActor *&pOther )
 		else if ( lMax == 0 )
 		{
 			// [BC] Add the player's max. health bonus to his max.
-			lMax = static_cast<APlayerPawn *>( pOther )->GetMaxHealth( ) + pPlayer->mo->stamina + pPlayer->lMaxHealthBonus;
+			lMax = static_cast<APlayerPawn *>( pOther )->GetMaxHealth( ) + pPlayer->mo->stamina + pPlayer->MaxHealthBonus;
 			if ( pPlayer->morphTics )
 				lMax = MAXMORPHHEALTH;
 		}
 		// Apply max. health bonus to the max. allowable health.
 		else
-			lMax = lMax + pPlayer->lMaxHealthBonus;
+			lMax = lMax + pPlayer->MaxHealthBonus;
 
 		// The player's health already exceeds his maximum allowable health.
 		if ( pPlayer->health >= lMax )

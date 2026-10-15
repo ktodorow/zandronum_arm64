@@ -74,7 +74,7 @@ angle_t FNodeBuilder::PointToAngle (fixed_t x, fixed_t y)
 #else // [AL] !__APPLE__ || __llvm__
 	double ang = atan2 (double(y), double(x));
 #endif // [AL] __APPLE__ && !__llvm__
-	return angle_t((int)(ang * rad2bam)) << 1;
+	return angle_t(ang * rad2bam) << 1;
 }
 
 void FNodeBuilder::FindUsedVertices (vertex_t *oldverts, int max)

@@ -93,7 +93,12 @@ EXTERN_CVAR (Bool, cl_capfps)
 EXTERN_CVAR (Bool, r_deathcamera)
 
 // [BB]
-CVAR( Bool, cl_disallowfullpitch, false, CVAR_ARCHIVE )
+CUSTOM_CVAR( Bool, cl_disallowfullpitch, false, CVAR_ARCHIVE )
+{
+	// [AK] Reimpose the new pitch limits for all active players.
+	P_ResetPlayerPitchLimits();
+}
+
 EXTERN_CVAR (Bool, cl_oldfreelooklimit)
 
 extern int viewpitch;
@@ -135,16 +140,20 @@ void FGLRenderer::SetViewArea()
 	viewsector = R_PointInSubsector(viewx, viewy)->render_sector;
 
 	// keep the view within the render sector's floor and ceiling
-	fixed_t theZ = viewsector->ceilingplane.ZatPoint (viewx, viewy) - 4*FRACUNIT;
-	if (viewz > theZ)
+	// [AK] Allow spectators without physical restrictions to pass through floors/ceilings.
+	if (P_IsSpectatorUnrestricted(mViewActor) == false)
 	{
-		viewz = theZ;
-	}
+		fixed_t theZ = viewsector->ceilingplane.ZatPoint (viewx, viewy) - 4*FRACUNIT;
+		if (viewz > theZ)
+		{
+			viewz = theZ;
+		}
 
-	theZ = viewsector->floorplane.ZatPoint (viewx, viewy) + 4*FRACUNIT;
-	if (viewz < theZ)
-	{
-		viewz = theZ;
+		theZ = viewsector->floorplane.ZatPoint (viewx, viewy) + 4*FRACUNIT;
+		if (viewz < theZ)
+		{
+			viewz = theZ;
+		}
 	}
 
 	// Get the heightsec state from the render sector, not the current one!
@@ -389,6 +398,9 @@ void FGLRenderer::RenderScene(int recursion)
 	glDisable(GL_POLYGON_OFFSET_FILL);	// just in case
 
 	int pass;
+
+	// [AK] Take care of gl_texture and ZADF_FORCE_VIDEO_DEFAULTS.
+	OVERRIDE_GL_TEXTURE_IF_NECESSARY
 
 	if (mLightCount > 0 && gl_fixedcolormap == CM_DEFAULT && gl_lights && gl_dynlight_shader)
 	{
@@ -875,6 +887,8 @@ void FGLRenderer::SetFixedColormap (player_t *player)
 //
 //-----------------------------------------------------------------------------
 
+extern bool CLIENTDEMO_IsInFreeSpectateMode(); // [AK]
+
 sector_t * FGLRenderer::RenderViewpoint (AActor * camera, GL_IRECT * bounds, float fov, float ratio, float fovratio, bool mainview, bool toscreen)
 {       
 	// [BB] Check if stereo rendering is supported.
@@ -896,7 +910,10 @@ sector_t * FGLRenderer::RenderViewpoint (AActor * camera, GL_IRECT * bounds, flo
 
 
 	// [BB] consoleplayer should be able to toggle the chase cam.
+	// [AK] Don't use the chase cam if they're in free spectate mode.
 	if (camera->player && /*camera->player-players==consoleplayer &&*/
+		(CLIENTDEMO_IsInFreeSpectateMode() == false) &&
+		(camera->player - players != consoleplayer || players[consoleplayer].bSpectating == false) &&
 		((/*camera->player->*/players[consoleplayer].cheats & CF_CHASECAM) || (r_deathcamera && camera->health <= 0)) && camera==camera->player->mo)
 	{
 		mViewActor=NULL;
@@ -1205,7 +1222,9 @@ EXTERN_CVAR(Float, maxviewpitch)
 int FGLInterface::GetMaxViewPitch(bool down)
 {
 	// [BB] Zandronum clamps the pitch differently
-	if (cl_disallowfullpitch) return down? 56 : ( cl_oldfreelooklimit ? 32 : 56 );
+	// [AK] Check if we should limit the pitch based on ZADF_FORCE_SOFTWARE_PITCH_LIMITS.
+	if (cl_disallowfullpitch || zadmflags & ZADF_FORCE_SOFTWARE_PITCH_LIMITS)
+		return down ? 56 : ( cl_oldfreelooklimit ? 32 : 56 );
 	else return maxviewpitch;
 }
 

@@ -67,17 +67,61 @@
 #include "possession.h"
 #include "p_lnspec.h"
 #include "p_acs.h"
-// [BB] The next includes are only needed for GAMEMODE_DisplayStandardMessage
-#include "sbar.h"
-#include "v_video.h"
+#include "gi.h"
 
 //*****************************************************************************
 //	CONSOLE VARIABLES
 
-CVAR( Bool, instagib, false, CVAR_SERVERINFO | CVAR_LATCH | CVAR_CAMPAIGNLOCK );
-CVAR( Bool, buckshot, false, CVAR_SERVERINFO | CVAR_LATCH | CVAR_CAMPAIGNLOCK );
+CVAR( Bool, instagib, false, CVAR_SERVERINFO | CVAR_LATCH | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYSETTING );
+CVAR( Bool, buckshot, false, CVAR_SERVERINFO | CVAR_LATCH | CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYSETTING );
 
-CVAR( Bool, sv_suddendeath, true, CVAR_SERVERINFO | CVAR_LATCH );
+CVAR( Bool, sv_suddendeath, true, CVAR_SERVERINFO | CVAR_LATCH | CVAR_GAMEPLAYSETTING );
+
+CUSTOM_CVAR( Int, sv_maxlives, 0, CVAR_SERVERINFO | CVAR_LATCH | CVAR_GAMEPLAYSETTING )
+{
+	// [AK] Limit the maximum number of lives to 255. This should be more than enough.
+	if ( self > UCHAR_MAX )
+	{
+		self = UCHAR_MAX;
+		return;
+	}
+	else if ( self < 0 )
+	{
+		self = 0;
+		return;
+	}
+
+	// [AK] Notify the clients about the change.
+	SERVER_SettingChanged( self, false );
+}
+
+// [AM] Set or unset a map as being a "lobby" map.
+CUSTOM_CVAR( String, lobby, "", CVAR_SERVERINFO )
+{
+	if ( strcmp( *self, "" ) == 0 )
+	{
+		// Lobby map is empty.  Tell the client that if necessary.
+		if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
+		{
+			SERVER_Printf( PRINT_HIGH, "%s unset\n", self.GetName( ));
+			SERVERCOMMANDS_SetGameModeLimits( );
+		}
+	}
+	else
+	{
+		// Prevent setting a lobby map that doesn't exist.
+		level_info_t *map = FindLevelByName( *self );
+		if ( map == NULL )
+		{
+			Printf( "map %s doesn't exist.\n", *self );
+			self = "";
+			return;
+		}
+
+		// Update the client about the lobby map if necessary.
+		SERVER_SettingChanged( self, false );
+	}
+}
 
 //*****************************************************************************
 //	VARIABLES
@@ -88,6 +132,9 @@ static	GAMEMODE_s				g_GameModes[NUM_GAMEMODES];
 // Our current game mode.
 static	GAMEMODE_e				g_CurrentGameMode;
 
+// [AK] The result value of the current event being executed.
+static	LONG					g_lEventResult = 1;
+
 // [BB] Implement the string table and the conversion functions for the GMF and GAMEMODE enums.
 #define GENERATE_ENUM_STRINGS  // Start string generation
 #include "gamemode_enums.h"
@@ -96,107 +143,20 @@ static	GAMEMODE_e				g_CurrentGameMode;
 //*****************************************************************************
 //	FUNCTIONS
 
-void GAMEMODE_Construct( void )
+bool GAMEPLAYSETTING_s::IsOutOfScope( void )
 {
-	// Regular co-op.
-	g_GameModes[GAMEMODE_COOPERATIVE].ulFlags = GMF_COOPERATIVE|GMF_PLAYERSEARNKILLS;
-	strcpy( g_GameModes[GAMEMODE_COOPERATIVE].szName, "Cooperative" );
-	strncpy( g_GameModes[GAMEMODE_COOPERATIVE].szShortName, "COOP", 8 );
-	strncpy( g_GameModes[GAMEMODE_COOPERATIVE].szF1Texture, "F1_COOP", 8 );
+	if ( Scope != GAMESCOPE_OFFLINEANDONLINE )
+	{
+		// [AK] "offlineonly" settings are not applied in online games.
+		if (( Scope == GAMESCOPE_OFFLINEONLY ) && ( NETWORK_GetState( ) == NETSTATE_SERVER ))
+			return true;
 
-	// Survival co-op.
-	g_GameModes[GAMEMODE_SURVIVAL].ulFlags = GMF_COOPERATIVE|GMF_PLAYERSEARNKILLS|GMF_MAPRESETS|GMF_DEADSPECTATORS|GMF_USEMAXLIVES|GMF_MAPRESET_RESETS_MAPTIME;
-	strcpy( g_GameModes[GAMEMODE_SURVIVAL].szName, "Survival" );
-	strncpy( g_GameModes[GAMEMODE_SURVIVAL].szShortName, "SURV", 8 );
-	strncpy( g_GameModes[GAMEMODE_SURVIVAL].szF1Texture, "F1_SCP", 8 );
+		// [AK] "onlineonly" settings are not applied in offline games.
+		if (( Scope == GAMESCOPE_ONLINEONLY ) && ( NETWORK_GetState( ) != NETSTATE_SERVER ))
+			return true;
+	}
 
-	// Invasion.
-	g_GameModes[GAMEMODE_INVASION].ulFlags = GMF_COOPERATIVE|GMF_PLAYERSEARNKILLS|GMF_MAPRESETS|GMF_DEADSPECTATORS|GMF_USEMAXLIVES;
-	strcpy( g_GameModes[GAMEMODE_INVASION].szName, "Invasion" );
-	strncpy( g_GameModes[GAMEMODE_INVASION].szShortName, "INVAS", 8 );
-	strncpy( g_GameModes[GAMEMODE_INVASION].szF1Texture, "F1_INV", 8 );
-
-	// Regular deathmatch.
-	g_GameModes[GAMEMODE_DEATHMATCH].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNFRAGS;
-	strcpy( g_GameModes[GAMEMODE_DEATHMATCH].szName, "Deathmatch" );
-	strncpy( g_GameModes[GAMEMODE_DEATHMATCH].szShortName, "DM", 8 );
-	strncpy( g_GameModes[GAMEMODE_DEATHMATCH].szF1Texture, "F1_DM", 8 );
-
-	// Teamplay DM.
-	g_GameModes[GAMEMODE_TEAMPLAY].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNFRAGS|GMF_PLAYERSONTEAMS;
-	strcpy( g_GameModes[GAMEMODE_TEAMPLAY].szName, "Team DM" );
-	strncpy( g_GameModes[GAMEMODE_TEAMPLAY].szShortName, "TDM", 8 );
-	strncpy( g_GameModes[GAMEMODE_TEAMPLAY].szF1Texture, "F1_TDM", 8 );
-
-	// Duel.
-	g_GameModes[GAMEMODE_DUEL].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNFRAGS|GMF_MAPRESETS|GMF_MAPRESET_RESETS_MAPTIME;
-	strcpy( g_GameModes[GAMEMODE_DUEL].szName, "Duel" );
-	strncpy( g_GameModes[GAMEMODE_DUEL].szShortName, "DUEL", 8 );
-	strncpy( g_GameModes[GAMEMODE_DUEL].szF1Texture, "F1_DUEL", 8 );
-
-	// Terminator DM.
-	g_GameModes[GAMEMODE_TERMINATOR].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNFRAGS;
-	strcpy( g_GameModes[GAMEMODE_TERMINATOR].szName, "Terminator" );
-	strncpy( g_GameModes[GAMEMODE_TERMINATOR].szShortName, "TERM", 8 );
-	strncpy( g_GameModes[GAMEMODE_TERMINATOR].szF1Texture, "F1_TERM", 8 );
-
-	// Last man standing.
-	g_GameModes[GAMEMODE_LASTMANSTANDING].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNWINS|GMF_DONTSPAWNMAPTHINGS|GMF_MAPRESETS|GMF_DEADSPECTATORS|GMF_USEMAXLIVES|GMF_MAPRESET_RESETS_MAPTIME;
-	strcpy( g_GameModes[GAMEMODE_LASTMANSTANDING].szName, "LMS" );
-	strncpy( g_GameModes[GAMEMODE_LASTMANSTANDING].szShortName, "LMS", 8 );
-	strncpy( g_GameModes[GAMEMODE_LASTMANSTANDING].szF1Texture, "F1_LMS", 8 );
-
-	// Team LMS.
-	g_GameModes[GAMEMODE_TEAMLMS].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNWINS|GMF_DONTSPAWNMAPTHINGS|GMF_MAPRESETS|GMF_DEADSPECTATORS|GMF_PLAYERSONTEAMS|GMF_USEMAXLIVES|GMF_MAPRESET_RESETS_MAPTIME;
-	strcpy( g_GameModes[GAMEMODE_TEAMLMS].szName, "Team LMS" );
-	strncpy( g_GameModes[GAMEMODE_TEAMLMS].szShortName, "TLMS", 8 );
-	strncpy( g_GameModes[GAMEMODE_TEAMLMS].szF1Texture, "F1_TLMS", 8 );
-
-	// Possession DM.
-	// [BB] Even though possession doesn't do a full map reset, it still resets the map time during its partial reset.
-	g_GameModes[GAMEMODE_POSSESSION].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNPOINTS|GMF_MAPRESET_RESETS_MAPTIME;
-	strcpy( g_GameModes[GAMEMODE_POSSESSION].szName, "Possession" );
-	strncpy( g_GameModes[GAMEMODE_POSSESSION].szShortName, "POSS", 8 );
-	strncpy( g_GameModes[GAMEMODE_POSSESSION].szF1Texture, "F1_POSS", 8 );
-
-	// Team possession.
-	g_GameModes[GAMEMODE_TEAMPOSSESSION].ulFlags = GMF_DEATHMATCH|GMF_PLAYERSEARNPOINTS|GMF_PLAYERSONTEAMS|GMF_MAPRESET_RESETS_MAPTIME;
-	strcpy( g_GameModes[GAMEMODE_TEAMPOSSESSION].szName, "Team Possession" );
-	strncpy( g_GameModes[GAMEMODE_TEAMPOSSESSION].szShortName, "TM POSS", 8 );
-	strncpy( g_GameModes[GAMEMODE_TEAMPOSSESSION].szF1Texture, "F1_TPOSS", 8 );
-
-	// Regular teamgame.
-	g_GameModes[GAMEMODE_TEAMGAME].ulFlags = GMF_TEAMGAME|GMF_PLAYERSEARNPOINTS|GMF_PLAYERSONTEAMS;
-	strcpy( g_GameModes[GAMEMODE_TEAMGAME].szName, "Team Game" );
-	strncpy( g_GameModes[GAMEMODE_TEAMGAME].szShortName, "TM GAME", 8 );
-	strncpy( g_GameModes[GAMEMODE_TEAMGAME].szF1Texture, "F1_TMGM", 8 );
-
-	// Capture the flag.
-	g_GameModes[GAMEMODE_CTF].ulFlags = GMF_TEAMGAME|GMF_USEFLAGASTEAMITEM|GMF_PLAYERSEARNPOINTS|GMF_PLAYERSONTEAMS|GMF_USETEAMITEM;
-	strcpy( g_GameModes[GAMEMODE_CTF].szName, "CTF" );
-	strncpy( g_GameModes[GAMEMODE_CTF].szShortName, "CTF", 8 );
-	strncpy( g_GameModes[GAMEMODE_CTF].szF1Texture, "F1_CTF", 8 );
-
-	// One flag CTF.
-	g_GameModes[GAMEMODE_ONEFLAGCTF].ulFlags = GMF_TEAMGAME|GMF_USEFLAGASTEAMITEM|GMF_PLAYERSEARNPOINTS|GMF_PLAYERSONTEAMS|GMF_USETEAMITEM;
-	strcpy( g_GameModes[GAMEMODE_ONEFLAGCTF].szName, "1-Flag CTF" );
-	strncpy( g_GameModes[GAMEMODE_ONEFLAGCTF].szShortName, "1F-CTF", 8 );
-	strncpy( g_GameModes[GAMEMODE_ONEFLAGCTF].szF1Texture, "F1_1FCTF", 8 );
-
-	// Skulltag.
-	g_GameModes[GAMEMODE_SKULLTAG].ulFlags = GMF_TEAMGAME|GMF_PLAYERSEARNPOINTS|GMF_PLAYERSONTEAMS|GMF_USETEAMITEM;
-	strcpy( g_GameModes[GAMEMODE_SKULLTAG].szName, "Skulltag" );
-	strncpy( g_GameModes[GAMEMODE_SKULLTAG].szShortName, "ST", 8 );
-	strncpy( g_GameModes[GAMEMODE_SKULLTAG].szF1Texture, "F1_ST", 8 );
-
-	// Domination
-	g_GameModes[GAMEMODE_DOMINATION].ulFlags = GMF_TEAMGAME|GMF_PLAYERSEARNPOINTS|GMF_PLAYERSONTEAMS;
-	strcpy( g_GameModes[GAMEMODE_DOMINATION].szName, "Domination" );
-	strncpy( g_GameModes[GAMEMODE_DOMINATION].szShortName, "DOM", 8 );
-	strncpy( g_GameModes[GAMEMODE_DOMINATION].szF1Texture, "F1_DOM", 8 );
-
-	// Our default game mode is co-op.
-	g_CurrentGameMode = GAMEMODE_COOPERATIVE;
+	return false;
 }
 
 //*****************************************************************************
@@ -225,58 +185,307 @@ void GAMEMODE_Tick( void )
 
 //*****************************************************************************
 //
-int GAMEMODE_ParserMustGetEnumName ( FScanner &sc, const char *EnumName, const char *FlagPrefix, int (*GetValueFromName) ( const char *Name ), const bool StringAlreadyParse = false )
+void GAMEMODE_ParseGameModeBlock( FScanner &sc, const GAMEMODE_e GameMode )
 {
-	if ( StringAlreadyParse == false )
-		sc.MustGetString ();
-	FString flagname = FlagPrefix;
-	flagname += sc.String;
-	flagname.ToUpper();
-	const int flagNum = GetValueFromName ( flagname.GetChars() );
-	if ( flagNum == -1 )
-		sc.ScriptError ( "Unknown %s '%s', on line %d in GAMEMODE.", EnumName, sc.String, sc.Line );
-	return flagNum;
-}
+	sc.MustGetStringName( "{" );
 
-//*****************************************************************************
-//
-void GAMEMODE_ParseGamemodeInfoLump ( FScanner &sc, const GAMEMODE_e GameMode )
-{
-	TEAMINFO team;
-
-	sc.MustGetStringName("{");
-	while (!sc.CheckString("}"))
+	while ( !sc.CheckString( "}" ))
 	{
-		sc.MustGetString();
+		sc.MustGetString( );
 
-		if (0 == stricmp (sc.String, "removeflag"))
+		if ( stricmp( sc.String, "removeflag" ) == 0 )
 		{
-			g_GameModes[GameMode].ulFlags &= ~GAMEMODE_ParserMustGetEnumName( sc, "flag", "GMF_", GetValueGMF );
+			g_GameModes[GameMode].ulFlags &= ~sc.MustGetEnumName( "flag", "GMF_", GetValueGMF );
 		}
-		else if (0 == stricmp (sc.String, "addflag"))
+		else if ( stricmp( sc.String, "addflag" ) == 0 )
 		{
-			g_GameModes[GameMode].ulFlags |= GAMEMODE_ParserMustGetEnumName( sc, "flag", "GMF_", GetValueGMF );
+			g_GameModes[GameMode].ulFlags |= sc.MustGetEnumName( "flag", "GMF_", GetValueGMF );
+		}
+		else if ( stricmp( sc.String, "name" ) == 0 )
+		{
+			sc.MustGetString( );
+			g_GameModes[GameMode].Name = sc.String;
+		}
+		else if ( stricmp( sc.String, "shortname" ) == 0 )
+		{
+			sc.MustGetString( );
+			g_GameModes[GameMode].ShortName = sc.String;
+
+			// [AK] Limit the short name to only 8 characters.
+			g_GameModes[GameMode].ShortName.Truncate( 8 );
+		}
+		else if ( stricmp( sc.String, "f1texture" ) == 0 )
+		{
+			sc.MustGetString( );
+			g_GameModes[GameMode].F1Texture = sc.String;
+
+			// [AK] The F1 texture cannot exceed more than 8 characters.
+			g_GameModes[GameMode].F1Texture.Truncate( 8 );
+		}
+		else if ( stricmp( sc.String, "welcomesound" ) == 0 )
+		{
+			sc.MustGetString( );
+			g_GameModes[GameMode].WelcomeSound = sc.String;
+		}
+		else if (( stricmp( sc.String, "gamesettings" ) == 0 ) || ( stricmp( sc.String, "lockedgamesettings" ) == 0 ))
+		{
+			GAMEMODE_ParseGameSettingBlock( sc, GameMode, !stricmp( sc.String, "lockedgamesettings" ));
+		}
+		else if ( stricmp( sc.String, "removegamesetting" ) == 0 )
+		{
+			sc.MustGetString( );
+			FBaseCVar *pCVar = FindCVar( sc.String, NULL );
+
+			// [AK] Make sure that this CVar exists.
+			if ( pCVar == NULL )
+				sc.ScriptError( "'%s' is not a CVar.", sc.String );
+			
+			for ( unsigned int i = 0; i < g_GameModes[GameMode].GameplaySettings.Size( ); i++ )
+			{
+				if ( pCVar == g_GameModes[GameMode].GameplaySettings[i].pCVar )
+				{
+					g_GameModes[GameMode].GameplaySettings.Delete( i );
+					break;
+				}
+			}
 		}
 		else
-			sc.ScriptError ( "Unknown option '%s', on line %d in GAMEMODE.", sc.String, sc.Line );
+		{
+			sc.ScriptError( "Unknown option '%s', on line %d in GAMEMODE.", sc.String, sc.Line );
+		}
 	}
 }
 
 //*****************************************************************************
 //
-void GAMEMODE_ParseGamemodeInfo( void )
+void GAMEMODE_ParseGameSettingBlock( FScanner &sc, const GAMEMODE_e GameMode, bool bLockCVars, bool bResetCVars )
+{
+	GAMESCOPE_e Scope = GAMESCOPE_OFFLINEANDONLINE;
+	sc.MustGetStringName( "{" );
+	
+	// [AK] If this is the start of a "defaultgamesettings" or "defaultlockedgamesettings" block, empty the CVar
+	// list for all game modes. We don't want to do this more than once in a single GAMEMODE lump in case both
+	// blocks are declared in the same lump.
+	if (( GameMode == NUM_GAMEMODES ) && ( bResetCVars ))
+	{
+		for ( unsigned int mode = GAMEMODE_COOPERATIVE; mode < NUM_GAMEMODES; mode++ )
+			g_GameModes[mode].GameplaySettings.Clear( );
+	}
+
+	// [AK] Keep looping until we exited out of all blocks.
+	while ( true )
+	{
+		sc.MustGetString( );
+
+		// [AK] "offlineonly" or "onlineonly" indicate the start of a new subblock and scope. CVars added into
+		// either of these subblocks are only set in offline or online games respectively.
+		if (( stricmp( sc.String, "offlineonly" ) == 0 ) || ( stricmp( sc.String, "onlineonly" ) == 0 ))
+		{
+			// [AK] Don't start a new subblock while in the middle of another subblock.
+			if ( Scope != GAMESCOPE_OFFLINEANDONLINE )
+				sc.ScriptError( "Tried to start a new \"%s\" subblock in the middle of an \"%s\" subblock.", sc.String, Scope == GAMESCOPE_OFFLINEONLY ? "offlineonly" : "onlineonly" );
+			
+			Scope = ( stricmp( sc.String, "offlineonly" ) == 0 ) ? GAMESCOPE_OFFLINEONLY : GAMESCOPE_ONLINEONLY;
+			sc.MustGetStringName( "{" );
+			continue;
+		}
+		// [AK] This indicates the closing of a (sub)block.
+		else if ( stricmp( sc.String, "}" ) == 0 )
+		{
+			// [AK] If we're not in an "offlineonly" or "onlineonly" subblock, then exit out of the game settings block entirely.
+			if ( Scope == GAMESCOPE_OFFLINEANDONLINE )
+				break;
+			
+			Scope = GAMESCOPE_OFFLINEANDONLINE;
+			continue;
+		}
+
+		FBaseCVar *pCVar = FindCVar( sc.String, NULL );
+
+		// [AK] Make sure that this CVar exists.
+		if ( pCVar == NULL )
+			sc.ScriptError( "'%s' is not a CVar.", sc.String );
+
+		// [AK] Only CVars with the CVAR_GAMEPLAYSETTING flag are acceptable. If it's a flag CVar, then only
+		// the flagset CVar needs the flag. Mask CVars aren't allowed to keep this implementation simple.
+		if ( pCVar->IsFlagCVar( ) == false )
+		{
+			if (( pCVar->GetFlags( ) & CVAR_GAMEPLAYSETTING ) == false )
+			{
+				if ( pCVar->GetFlags( ) & CVAR_GAMEPLAYFLAGSET )
+					sc.ScriptError( "Only include flag CVars belonging to '%s' in the game settings block.", pCVar->GetName( ));
+				else
+					sc.ScriptError( "'%s' cannot be used in a game settings block.", pCVar->GetName( ));
+			}
+		}
+		else if (( static_cast<FFlagCVar *>( pCVar )->GetValueVar( )->GetFlags( ) & CVAR_GAMEPLAYFLAGSET ) == false )
+		{
+			sc.ScriptError( "'%s' is a flag that cannot be used in a game settings block.", pCVar->GetName( ));
+		}
+
+		// [AK] There must be an equal sign and value after the name of the CVar.
+		sc.MustGetStringName( "=" );
+		sc.MustGetString( );
+
+		GAMEPLAYSETTING_s Setting;
+		Setting.pCVar = pCVar;
+
+		switch ( pCVar->GetRealType( ))
+		{
+			case CVAR_Bool:
+			case CVAR_Dummy:
+			{
+				if ( stricmp( sc.String, "true" ) == 0 )
+					Setting.Val.Bool = true;
+				else if ( stricmp( sc.String, "false" ) == 0 )
+					Setting.Val.Bool = false;
+				else
+					Setting.Val.Bool = !!atoi( sc.String );
+
+				Setting.Type = CVAR_Bool;
+				break;
+			}
+
+			case CVAR_Float:
+			{
+				Setting.Val.Float = static_cast<float>( atof( sc.String ));
+				Setting.Type = CVAR_Float;
+				break;
+			}
+
+			default:
+			{
+				Setting.Val.Int = atoi( sc.String );
+				Setting.Type = CVAR_Int;
+				break;
+			}
+		}
+
+		Setting.DefaultVal = Setting.Val;
+		Setting.bIsLocked = bLockCVars;
+
+		for ( unsigned int mode = GAMEMODE_COOPERATIVE; mode < NUM_GAMEMODES; mode++ )
+		{
+			// [AK] If this CVar was added inside a "defaultgamesettings" or "defaultlockedgamesettings" block, apply
+			// it to all the game modes. Otherwise, just apply it to the one we specified.
+			if (( GameMode == NUM_GAMEMODES ) || ( GameMode == static_cast<GAMEMODE_e>( mode )))
+			{
+				bool bPushToList = true;
+				Setting.Scope = Scope;
+
+				// [AK] Check if this CVar is already in the list. We don't want to have multiple copies of the same CVar.
+				for ( unsigned int i = 0; i < g_GameModes[mode].GameplaySettings.Size( ); i++ )
+				{
+					if ( g_GameModes[mode].GameplaySettings[i].pCVar == Setting.pCVar )
+					{
+						// [AK] Check if these two CVars have the same scope (i.e. offline or online games only), or if the
+						// new CVar that we're trying to add has no scope (i.e. works in both offline and online games).
+						if (( g_GameModes[mode].GameplaySettings[i].Scope == Setting.Scope ) || ( Setting.Scope == GAMESCOPE_OFFLINEANDONLINE ))
+						{
+							// [AK] A locked CVar always replaces any unlocked copies of the same CVar that already exist.
+							// On the other hand, an unlocked CVar cannot replace any locked copies.
+							if (( g_GameModes[mode].GameplaySettings[i].bIsLocked ) && ( Setting.bIsLocked == false ))
+							{
+								// [AK] If the new/unlocked CVar has no scope, but the old/locked CVar is "offlineonly" or "onlineonly",
+								// then change the new CVar's scope so that it's opposite to the old CVar's. The two CVars can then co-exist.
+								// Otherwise, the new CVar must be discarded.
+								if ( g_GameModes[mode].GameplaySettings[i].Scope != Setting.Scope )
+									Setting.Scope = g_GameModes[mode].GameplaySettings[i].Scope != GAMESCOPE_OFFLINEONLY ? GAMESCOPE_OFFLINEONLY : GAMESCOPE_ONLINEONLY;
+								else
+									bPushToList = false;
+
+								break;
+							}
+
+							g_GameModes[mode].GameplaySettings.Delete( i );
+						}
+						// [AK] If the old CVar has no scope, but the new CVar is "offlineonly" or "onlineonly", just change the old CVar's
+						// scope so that it becomes opposite to the new CVar's. The two CVars can then co-exist.
+						else if ( g_GameModes[mode].GameplaySettings[i].Scope == GAMESCOPE_OFFLINEANDONLINE )
+						{
+							g_GameModes[mode].GameplaySettings[i].Scope = Setting.Scope != GAMESCOPE_OFFLINEONLY ? GAMESCOPE_OFFLINEONLY : GAMESCOPE_ONLINEONLY;
+						}
+					}
+				}
+
+				if ( bPushToList )
+					g_GameModes[mode].GameplaySettings.Push( Setting );
+			}
+		}
+	}
+}
+
+//*****************************************************************************
+//
+void GAMEMODE_ParseGameModeInfo( void )
 {
 	int lastlump = 0, lump;
 
-	while ((lump = Wads.FindLump ("GAMEMODE", &lastlump)) != -1)
+	while (( lump = Wads.FindLump( "GAMEMODE", &lastlump )) != -1 )
 	{
-		FScanner sc(lump);
-		while (sc.GetString ())
+		FScanner sc( lump );
+		bool bParsedDefGameSettings = false;
+		bool bParsedDefLockedSettings = false;
+
+		while ( sc.GetString( ))
 		{
-			GAMEMODE_e GameMode = static_cast<GAMEMODE_e>( GAMEMODE_ParserMustGetEnumName( sc, "gamemode", "GAMEMODE_", GetValueGAMEMODE_e, true ) );
-			GAMEMODE_ParseGamemodeInfoLump ( sc, GameMode );
+			if ( stricmp( sc.String, "defaultgamesettings" ) == 0 )
+			{
+				// [AK] Don't allow more than one "defaultgamesettings" block in the same lump.
+				if ( bParsedDefGameSettings )
+					sc.ScriptError( "There is already a \"DefaultGameSettings\" block defined in this lump." );
+
+				GAMEMODE_ParseGameSettingBlock( sc, NUM_GAMEMODES, false, !( bParsedDefGameSettings || bParsedDefLockedSettings ));
+				bParsedDefGameSettings = true;
+			}
+			else if ( stricmp( sc.String, "defaultlockedgamesettings" ) == 0 )
+			{
+				// [AK] Don't allow more than one "defaultlockedgamesettings" block in the same lump.
+				if ( bParsedDefLockedSettings )
+					sc.ScriptError( "There is already a \"DefaultLockedGameSettings\" block defined in this lump." );
+
+				GAMEMODE_ParseGameSettingBlock( sc, NUM_GAMEMODES, true, !( bParsedDefGameSettings || bParsedDefLockedSettings ));
+				bParsedDefLockedSettings = true;
+			}
+			else
+			{
+				GAMEMODE_e GameMode = static_cast<GAMEMODE_e>( sc.MustGetEnumName( "gamemode", "GAMEMODE_", GetValueGAMEMODE_e, true ));
+				GAMEMODE_ParseGameModeBlock( sc, GameMode );
+			}
 		}
 	}
+
+	const ULONG ulPrefixLen = strlen( "GAMEMODE_" );
+
+	// [AK] Check if all game mode are acceptable.
+	for ( unsigned int i = GAMEMODE_COOPERATIVE; i < NUM_GAMEMODES; i++ )
+	{
+		FString name = ( GetStringGAMEMODE_e( static_cast<GAMEMODE_e>( i )) + ulPrefixLen );
+		name.ToLower( );
+
+		// [AK] Make sure the game mode has a (short) name.
+		if ( g_GameModes[i].Name.IsEmpty( ))
+			I_Error( "\"%s\" has no name.", name.GetChars( ));
+		if ( g_GameModes[i].ShortName.IsEmpty( ))
+			I_Error( "\"%s\" has no short name.", name.GetChars( ));
+
+		// [AK] Get the game mode type (cooperative, deathmatch, or team game). There shouldn't be more than one enabled or none at all.
+		ULONG ulFlags = g_GameModes[i].ulFlags & GAMETYPE_MASK;
+		if (( ulFlags == 0 ) || (( ulFlags & ( ulFlags - 1 )) != 0 ))
+			I_Error( "Can't determine if \"%s\" is cooperative, deathmatch, or team-based.", name.GetChars( ));
+
+		// [AK] Get the type of "players earn" flag this game mode is currently using.
+		ulFlags = g_GameModes[i].ulFlags & EARNTYPE_MASK;
+
+		// [AK] If all of these flags were removed or if more than one was added, then throw an error.
+		if ( ulFlags == 0 )
+			I_Error( "Players have no way of earning kills, frags, points, or wins in \"%s\".", name.GetChars( ));
+		else if (( ulFlags & ( ulFlags - 1 )) != 0 )
+			I_Error( "There is more than one PLAYERSEARN flag enabled in \"%s\".", name.GetChars( ));
+	}
+
+	// Our default game mode is co-op.
+	g_CurrentGameMode = GAMEMODE_COOPERATIVE;
 }
 
 //*****************************************************************************
@@ -298,32 +507,49 @@ ULONG GAMEMODE_GetCurrentFlags( void )
 
 //*****************************************************************************
 //
-char *GAMEMODE_GetShortName( GAMEMODE_e GameMode )
+const char *GAMEMODE_GetShortName( GAMEMODE_e GameMode )
 {
 	if ( GameMode >= NUM_GAMEMODES )
 		return ( NULL );
 
-	return ( g_GameModes[GameMode].szShortName );
+	return ( g_GameModes[GameMode].ShortName.GetChars( ));
 }
 
 //*****************************************************************************
 //
-char *GAMEMODE_GetName( GAMEMODE_e GameMode )
+const char *GAMEMODE_GetName( GAMEMODE_e GameMode )
 {
 	if ( GameMode >= NUM_GAMEMODES )
 		return ( NULL );
 
-	return ( g_GameModes[GameMode].szName );
+	return ( g_GameModes[GameMode].Name.GetChars( ));
 }
 
 //*****************************************************************************
 //
-char *GAMEMODE_GetF1Texture( GAMEMODE_e GameMode )
+const char *GAMEMODE_GetCurrentName( void )
+{
+	return ( g_GameModes[g_CurrentGameMode].Name.GetChars( ));
+}
+
+//*****************************************************************************
+//
+const char *GAMEMODE_GetF1Texture( GAMEMODE_e GameMode )
 {
 	if ( GameMode >= NUM_GAMEMODES )
 		return ( NULL );
 
-	return ( g_GameModes[GameMode].szF1Texture );
+	return ( g_GameModes[GameMode].F1Texture.GetChars( ));
+}
+
+//*****************************************************************************
+//
+const char *GAMEMODE_GetWelcomeSound( GAMEMODE_e GameMode )
+{
+	if ( GameMode >= NUM_GAMEMODES )
+		return ( NULL );
+
+	return ( g_GameModes[GameMode].WelcomeSound.GetChars( ));
 }
 
 //*****************************************************************************
@@ -391,13 +617,12 @@ bool GAMEMODE_IsGameInCountdown( void )
 {
 	if ( survival )
 		return ( SURVIVAL_GetState( ) == SURVS_COUNTDOWN );
-	// [BB] What about IS_COUNTDOWN?
 	else if ( invasion )
-		return ( INVASION_GetState( ) == IS_FIRSTCOUNTDOWN );
+		return ( ( INVASION_GetState( ) == IS_FIRSTCOUNTDOWN ) || ( INVASION_GetState( ) == IS_COUNTDOWN ) );
 	else if ( duel )
 		return ( DUEL_GetState( ) == DS_COUNTDOWN );
 	else if ( teamlms || lastmanstanding )
-		return ( LASTMANSTANDING_GetState( ) == LMSS_COUNTDOWN );
+		return ( ( LASTMANSTANDING_GetState( ) == LMSS_COUNTDOWN ) || ( LASTMANSTANDING_GetState( ) == LMSS_NEXTROUNDCOUNTDOWN ) );
 	// [BB] What about PSNS_PRENEXTROUNDCOUNTDOWN?
 	else if ( possession || teampossession )
 		return ( ( POSSESSION_GetState( ) == PSNS_COUNTDOWN ) || ( POSSESSION_GetState( ) == PSNS_NEXTROUNDCOUNTDOWN ) );
@@ -415,7 +640,7 @@ bool GAMEMODE_IsGameInProgress( void )
 	if ( survival )
 		return ( SURVIVAL_GetState( ) == SURVS_INPROGRESS );
 	else if ( invasion )
-		return ( ( INVASION_GetState( ) == IS_INPROGRESS ) || ( INVASION_GetState( ) == IS_BOSSFIGHT ) || ( INVASION_GetState( ) == IS_WAVECOMPLETE ) || ( INVASION_GetState( ) == IS_COUNTDOWN ) );
+		return ( ( INVASION_GetState( ) == IS_INPROGRESS ) || ( INVASION_GetState( ) == IS_BOSSFIGHT ) || ( INVASION_GetState( ) == IS_WAVECOMPLETE ) );
 	else if ( duel )
 		return ( DUEL_GetState( ) == DS_INDUEL );
 	else if ( teamlms || lastmanstanding )
@@ -536,7 +761,7 @@ void GAMEMODE_GetTimeLeftString( FString &TimeLeftString )
 
 //*****************************************************************************
 //
-void GAMEMODE_RespawnDeadSpectators( BYTE Playerstate )
+void GAMEMODE_RespawnDeadPlayers( playerstate_t deadSpectatorState, playerstate_t deadPlayerState )
 {
 	// [BB] This is server side.
 	if ( NETWORK_InClientMode() )
@@ -569,13 +794,34 @@ void GAMEMODE_RespawnDeadSpectators( BYTE Playerstate )
 			continue;
 		}
 
-		players[ulIdx].bSpectating = false;
-		players[ulIdx].bDeadSpectator = false;
+		// [AK] Using PST_DEAD for the state means to ignore them, in case only
+		// dead players should respawn but not dead spectators, and vice-versa.
+		if ( players[ulIdx].bDeadSpectator )
+		{
+			if ( deadSpectatorState == PST_DEAD )
+				continue;
+		}
+		else if ( deadPlayerState == PST_DEAD )
+		{
+			continue;
+		}
+
+		// [AK] When dead players (i.e. not dead spectators) are respawned with
+		// PST_REBORN, their lives aren't fully replenished like it is for dead
+		// spectators. If the game was already in progress, then they will also
+		// lose a life upon respawning. This is particularly useful for survival
+		// invasion when dead players respawn after the end of a wave.
 		if ( GAMEMODE_GetCurrentFlags() & GMF_USEMAXLIVES )
 		{
-			PLAYER_SetLivesLeft ( &players[ulIdx], GAMEMODE_GetMaxLives() - 1 );
+			if (( players[ulIdx].bDeadSpectator ) || ( deadPlayerState != PST_REBORN ))
+				PLAYER_SetLivesLeft( &players[ulIdx], GAMEMODE_GetMaxLives( ) - 1 );
+			else if (( GAMEMODE_IsGameInProgress( )) && ( players[ulIdx].ulLivesLeft > 0 ))
+				PLAYER_SetLivesLeft( &players[ulIdx], players[ulIdx].ulLivesLeft - 1 );
 		}
-		players[ulIdx].playerstate = Playerstate;
+
+		players[ulIdx].playerstate = players[ulIdx].bDeadSpectator ? deadSpectatorState : deadPlayerState;
+		players[ulIdx].bSpectating = false;
+		players[ulIdx].bDeadSpectator = false;
 
 		APlayerPawn *oldactor = players[ulIdx].mo;
 
@@ -599,12 +845,14 @@ void GAMEMODE_RespawnDeadSpectators( BYTE Playerstate )
 
 	// [BB] Dead spectators were allowed to use chasecam, but are not necessarily allowed to use it
 	// when alive again. Re-applying dmflags2 takes care of this.
-	dmflags2 = dmflags2;
+	dmflags2 = dmflags2.GetGenericRep( CVAR_Int ).Int;
 }
 
-void GAMEMODE_RespawnDeadSpectatorsAndPopQueue( BYTE Playerstate )
+//*****************************************************************************
+//
+void GAMEMODE_RespawnDeadPlayersAndPopQueue( playerstate_t deadSpectatorState, playerstate_t deadPlayerState )
 {
-	GAMEMODE_RespawnDeadSpectators( Playerstate );
+	GAMEMODE_RespawnDeadPlayers( deadSpectatorState, deadPlayerState );
 	// Let anyone who's been waiting in line join now.
 	JOINQUEUE_PopQueue( -1 );
 }
@@ -616,6 +864,10 @@ void GAMEMODE_RespawnAllPlayers( BOTEVENT_e BotEvent, playerstate_t PlayerState 
 	// [BB] This is server side.
 	if ( NETWORK_InClientMode() == false )
 	{
+		// [AK] In offline games, remember the old player that was being spied on.
+		player_t *const localPlayer = &players[consoleplayer];
+		player_t *const oldSpiedPlayer = (( NETWORK_GetState( ) != NETSTATE_SERVER ) && ( localPlayer->camera )) ? localPlayer->camera->player : nullptr;
+
 		// Respawn the players.
 		for ( ULONG ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
 		{
@@ -637,13 +889,28 @@ void GAMEMODE_RespawnAllPlayers( BOTEVENT_e BotEvent, playerstate_t PlayerState 
 			if ( pOldPlayerBody )
 			{
 				if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+				{
+					// [AK] Also tell the clients to stop all sounds on the player.
+					SERVERCOMMANDS_StopAllSoundsOnThing( pOldPlayerBody );
 					SERVERCOMMANDS_DestroyThing( pOldPlayerBody );
+				}
 
+				// [AK] Stop any sounds from this player before destroying them.
+				S_StopAllSoundsFromActor( pOldPlayerBody );
 				pOldPlayerBody->Destroy( );
 			}
 
 			if ( players[ulIdx].pSkullBot && ( BotEvent < NUM_BOTEVENTS ) )
 				players[ulIdx].pSkullBot->PostEvent( BotEvent );
+		}
+
+		// [AK] After all players have respawned, return the local player's view
+		// back to the player they were spying on before, if they were spectating.
+		// We must do this here because the old player's body was destroyed.
+		if (( NETWORK_GetState( ) != NETSTATE_SERVER ) && ( localPlayer->bSpectating ))
+		{
+			if (( oldSpiedPlayer != nullptr ) && ( oldSpiedPlayer != localPlayer ) && ( oldSpiedPlayer->mo != nullptr ))
+				localPlayer->camera = oldSpiedPlayer->mo;
 		}
 	}
 }
@@ -656,7 +923,7 @@ void GAMEMODE_SpawnPlayer( const ULONG ulPlayer, bool bClientUpdate )
 	if ( GAMEMODE_GetCurrentFlags() & GMF_TEAMGAME )
 	{
 		if ( players[ulPlayer].bOnTeam )
-			G_TeamgameSpawnPlayer( ulPlayer, players[ulPlayer].ulTeam, bClientUpdate );
+			G_TeamgameSpawnPlayer( ulPlayer, players[ulPlayer].Team, bClientUpdate );
 		else
 			G_TemporaryTeamSpawnPlayer( ulPlayer, bClientUpdate );
 	}
@@ -676,7 +943,7 @@ void GAMEMODE_ResetPlayersKillCount( const bool bInformClients )
 	for ( ULONG ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
 	{
 		players[ulIdx].killcount = 0;
-		players[ulIdx].ulRailgunShots = 0;
+		players[ulIdx].RailgunShots = 0;
 		// [BB] Also reset the things for ZADF_AWARD_DAMAGE_INSTEAD_KILLS.
 		players[ulIdx].lPointCount = 0;
 		players[ulIdx].ulUnrewardedDamageDealt = 0;
@@ -692,9 +959,9 @@ void GAMEMODE_ResetPlayersKillCount( const bool bInformClients )
 
 //*****************************************************************************
 //
-bool GAMEMODE_AreSpectatorsFordiddenToChatToPlayers( void )
+bool GAMEMODE_AreSpectatorsForbiddenToChatToPlayers( const bool doVoice )
 {
-	if ( ( lmsspectatorsettings & LMS_SPF_CHAT ) == false )
+	if (( lmsspectatorsettings & ( doVoice ? LMS_SPF_VOICECHAT : LMS_SPF_CHAT )) == false )
 	{
 		if (( teamlms || lastmanstanding ) && ( LASTMANSTANDING_GetState( ) == LMSS_INPROGRESS ))
 			return true;
@@ -708,18 +975,18 @@ bool GAMEMODE_AreSpectatorsFordiddenToChatToPlayers( void )
 
 //*****************************************************************************
 //
-bool GAMEMODE_IsClientFordiddenToChatToPlayers( const ULONG ulClient )
+bool GAMEMODE_IsClientForbiddenToChatToPlayers( const ULONG client, const bool doVoice )
 {
 	// [BB] If it's not a valid client, there are no restrictions. Note:
-	// ulClient == MAXPLAYERS means the server wants to say something.
-	if ( ulClient >= MAXPLAYERS )
+	// client == MAXPLAYERS means the server wants to say something.
+	if ( client >= MAXPLAYERS )
 		return false;
 
 	// [BB] Ingame players are allowed to chat to other players.
-	if ( players[ulClient].bSpectating == false )
+	if ( players[client].bSpectating == false )
 		return false;
 
-	return GAMEMODE_AreSpectatorsFordiddenToChatToPlayers();
+	return GAMEMODE_AreSpectatorsForbiddenToChatToPlayers( doVoice );
 }
 
 //*****************************************************************************
@@ -735,15 +1002,19 @@ bool GAMEMODE_PreventPlayersFromJoining( ULONG ulExcludePlayer )
 		return true;
 
 	// [BB] Duel in progress.
-	if ( duel && ( DUEL_CountActiveDuelers( ) >= 2 ) )
+	if ( duel && ( GAME_CountActivePlayers( ) >= 2 ) )
 		return true;
 
 	// [BB] If lives are limited, players are not allowed to join most of the time.
 	// [BB] The ga_worlddone check makes sure that in game players (at least in survival and survival invasion) aren't forced to spectate after a "changemap" map change.
 	// [BB] The ga_newgame check fixes some problem when starting a survival invasion skirmish with bots while already in a survival invasion game with bots
 	// (the consoleplayer is spawned as spectator in this case and leaves a ghost player upon joining)
-	if ( ( gameaction != ga_worlddone ) && ( gameaction != ga_newgame ) && GAMEMODE_AreLivesLimited() && GAMEMODE_IsGameInProgressOrResultSequence() )
+	if ( ( gameaction != ga_worlddone ) && ( gameaction != ga_newgame ) )
+	{
+		// [AK] Also check if it's survival invasion and the player is allowed to join.
+		if ( ( GAMEMODE_AreLivesLimited( ) && GAMEMODE_IsGameInProgressOrResultSequence( ) ) || INVASION_PreventPlayersFromJoining( ) )
 			return true;
+	}
 
 	return false;
 }
@@ -754,6 +1025,45 @@ bool GAMEMODE_AreLivesLimited( void )
 {
 	// [BB] Invasion is a special case: If sv_maxlives == 0 in invasion, players have infinite lives.
 	return ( ( ( sv_maxlives > 0 ) || ( invasion == false ) ) && ( GAMEMODE_GetCurrentFlags() & GMF_USEMAXLIVES ) );
+}
+
+//*****************************************************************************
+//
+bool GAMEMODE_ShouldPlayerLoseLife( void )
+{
+	// [AK] Players don't lose lives in survival invasion when a wave is complete.
+	return (( GAMEMODE_AreLivesLimited( )) && ( GAMEMODE_IsGameInProgress( )) && (( invasion == false ) || ( INVASION_GetState( ) != IS_WAVECOMPLETE )));
+}
+
+//*****************************************************************************
+//
+bool GAMEMODE_IsPlayerCarryingGameModeItem( player_t *player )
+{
+	GAMEMODE_e mode = GAMEMODE_GetCurrentMode( );
+
+	// [AK] Check if this player is carrying a team item like an enemy team's flag or skull.
+	if (( GAMEMODE_GetCurrentFlags( ) & GMF_USETEAMITEM ) && ( player->mo != NULL ))
+	{
+		if ( TEAM_FindOpposingTeamsItemInPlayersInventory( player ))
+			return true;
+
+		// [AK] Check if the player is carrying any team item. This can be useful for mods that
+		// might define their own special items.
+		AInventory *item = player->mo->FindInventory( PClass::FindClass( "TeamItem" ), true );
+
+		// [AK] The player shouldn't have the white flag when we're not playing one-flag CTF.
+		return (( item ) && (( item->IsKindOf( PClass::FindClass( "WhiteFlag" )) == false ) || ( mode == GAMEMODE_ONEFLAGCTF )));
+	}
+
+	// [AK] Check if this player is carrying the terminator sphere while playing terminator.
+	if (( mode == GAMEMODE_TERMINATOR ) && ( player->cheats2 & CF2_TERMINATORARTIFACT ))
+		return true;
+
+	// [AK] Check if this player is carrying the hellstone while playing (team) possession.
+	if ((( mode == GAMEMODE_POSSESSION ) || ( mode == GAMEMODE_TEAMPOSSESSION )) && ( player->cheats2 & CF2_POSSESSIONARTIFACT ))
+		return true;
+
+	return false;
 }
 
 //*****************************************************************************
@@ -804,7 +1114,7 @@ void GAMEMODE_ResetSpecalGamemodeStates ( void )
 {
 	// [BB] If playing Domination reset ownership, even the clients can do this.
 	if ( domination )
-		DOMINATION_Reset();
+		DOMINATION_Init();
 
 	// [BB] If playing possession make sure to end the held countdown, even the clients can do this.
 	if ( possession || teampossession )
@@ -861,90 +1171,179 @@ GAMESTATE_e GAMEMODE_GetState( void )
 
 //*****************************************************************************
 //
-void GAMEMODE_HandleEvent ( const GAMEEVENT_e Event, AActor *pActivator, const int DataOne, const int DataTwo )
+void GAMEMODE_SetState( GAMESTATE_e GameState )
+{
+	if( GameState == GAMESTATE_WAITFORPLAYERS )
+	{
+		if ( survival )
+			SURVIVAL_SetState( SURVS_WAITINGFORPLAYERS );
+		else if ( invasion )
+			INVASION_SetState( IS_WAITINGFORPLAYERS );
+		else if ( duel )
+			DUEL_SetState( DS_WAITINGFORPLAYERS );
+		else if ( teamlms || lastmanstanding )
+			LASTMANSTANDING_SetState( LMSS_WAITINGFORPLAYERS );
+		else if ( possession || teampossession )
+			POSSESSION_SetState( PSNS_WAITINGFORPLAYERS );
+	}
+	else if( GameState == GAMESTATE_COUNTDOWN )
+	{
+		if ( survival )
+			SURVIVAL_SetState( SURVS_COUNTDOWN );
+		else if ( invasion )
+			INVASION_SetState( IS_FIRSTCOUNTDOWN );
+		else if ( duel )
+			DUEL_SetState( DS_COUNTDOWN );
+		else if ( teamlms || lastmanstanding )
+			LASTMANSTANDING_SetState( LMSS_COUNTDOWN );
+		else if ( possession || teampossession )
+			POSSESSION_SetState( PSNS_COUNTDOWN );
+	}
+	else if( GameState == GAMESTATE_INPROGRESS )
+	{
+		if ( survival )
+			SURVIVAL_SetState( SURVS_INPROGRESS );
+		else if ( invasion )
+			INVASION_SetState( IS_INPROGRESS );
+		else if ( duel )
+			DUEL_SetState( DS_INDUEL );
+		else if ( teamlms || lastmanstanding )
+			LASTMANSTANDING_SetState( LMSS_INPROGRESS );
+		else if ( possession || teampossession )
+			POSSESSION_SetState( PSNS_INPROGRESS );
+	}
+	else if( GameState == GAMESTATE_INRESULTSEQUENCE )
+	{
+		if ( survival )
+			SURVIVAL_SetState( SURVS_MISSIONFAILED );
+		else if ( invasion )
+			INVASION_SetState( IS_MISSIONFAILED );
+		else if ( duel )
+			DUEL_SetState( DS_WINSEQUENCE );
+		else if ( teamlms || lastmanstanding )
+			LASTMANSTANDING_SetState( LMSS_WINSEQUENCE );
+	}
+}
+
+//*****************************************************************************
+//
+LONG GAMEMODE_HandleEvent ( const GAMEEVENT_e Event, AActor *pActivator, const int DataOne, const int DataTwo, const bool bRunNow, const int OverrideResult )
 {
 	// [BB] Clients don't start scripts.
 	if ( NETWORK_InClientMode() )
-		return;
+		return 1;
+
+	// [AK] Remember the old event's result value, in case we need to
+	// handle nested event calls (i.e. an event that's triggered in
+	// the middle of another event).
+	const LONG lOldResult = GAMEMODE_GetEventResult( );
+	GAMEMODE_SetEventResult( OverrideResult );
 
 	// [BB] The activator of the event activates the event script.
 	// The first argument is the type, e.g. GAMEEVENT_PLAYERFRAGS,
 	// the second and third are specific to the event, e.g. the second is the number of the fragged player.
 	// The third argument will be zero if it isn't used in the script.
-	FBehavior::StaticStartTypedScripts( SCRIPT_Event, pActivator, true, Event, false, false, DataOne, DataTwo );
+	FBehavior::StaticStartTypedScripts( SCRIPT_Event, pActivator, true, Event, bRunNow, false, DataOne, DataTwo );
+
+	// [AK] Get the result value of the event, then reset it back to the old value.
+	LONG lResult = GAMEMODE_GetEventResult( );
+	GAMEMODE_SetEventResult( lOldResult );
+
+	// [AK] Return the result value of the event.
+	return lResult;
 }
 
 //*****************************************************************************
 //
-void GAMEMODE_DisplayStandardMessage( const char *pszMessage, const bool bInformClients )
+void GAMEMODE_HandleSpawnEvent ( AActor *actor )
 {
-	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-	{
-		DHUDMessageFadeOut	*pMsg;
+	if ( actor == nullptr )
+		return;
 
-		// Display the HUD message.
-		pMsg = new DHUDMessageFadeOut( BigFont, pszMessage,
-			160.4f,
-			75.0f,
-			320,
-			200,
-			CR_RED,
-			3.0f,
-			2.0f );
-
-		StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
-	}
-	// If necessary, send it to clients.
-	else if ( bInformClients )
+	// [AK] We shouldn't need to execute this for players since we already have
+	// special script types like ENTER, RETURN, and RESPAWN.
+	if (( actor->player == nullptr ) && (( actor->STFlags & STFL_NOSPAWNEVENTSCRIPT ) == false ))
 	{
-		SERVERCOMMANDS_PrintHUDMessageFadeOut( pszMessage, 160.4f, 75.0f, 320, 200, CR_RED, 3.0f, 2.0f, "BigFont", false, MAKE_ID('C','N','T','R') );
+		bool notImportant = false;
+
+		// [AK] Projectiles and BulletPuffs can have NOBLOCKMAP enabled but that
+		// doesn't make them unimportant.
+		if (( actor->flags & MF_NOBLOCKMAP ) && ((( actor->flags & MF_MISSILE ) == false ) && ( actor->IsKindOf( PClass::FindClass( NAME_BulletPuff )) == false )))
+			notImportant = true;
+		else if (( actor->flags & MF_NOSECTOR ) || ( actor->IsKindOf( RUNTIME_CLASS( AHexenArmor ))))
+			notImportant = true;
+
+		// [AK] If we want to force GAMEEVENT_ACTOR_SPAWNED on every actor, then
+		// ignore less important actors unless they enabled USESPAWNEVENTSCRIPT.
+		if (( actor->STFlags & STFL_USESPAWNEVENTSCRIPT ) || (( gameinfo.bForceSpawnEventScripts ) && ( notImportant == false )))
+		{
+			enum
+			{
+				GAMEEVENT_SPAWN_LEVELSPAWNED	= 1 << 0,
+				GAMEEVENT_SPAWN_RANDOMSPAWNED	= 1 << 1,
+			};
+
+			unsigned int spawnEventFlags = 0;
+
+			if ( actor->STFlags & STFL_LEVELSPAWNED )
+				spawnEventFlags |= GAMEEVENT_SPAWN_LEVELSPAWNED;
+
+			if ( actor->STFlags & STFL_RANDOMSPAWNED )
+				spawnEventFlags |= GAMEEVENT_SPAWN_RANDOMSPAWNED;
+
+			GAMEMODE_HandleEvent( GAMEEVENT_ACTOR_SPAWNED, actor, spawnEventFlags, 0, true );
+		}
 	}
 }
 
 //*****************************************************************************
-// [BB] Expects pszMessage already to be colorized with V_ColorizeString.
-void GAMEMODE_DisplayCNTRMessage( const char *pszMessage, const bool bInformClients, const ULONG ulPlayerExtra, const ULONG ulFlags )
+//
+bool GAMEMODE_HandleDamageEvent ( AActor *target, AActor *inflictor, AActor *source, int &damage, FName mod, bool bBeforeArmor )
 {
-	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-	{
-		DHUDMessageFadeOut *pMsg = new DHUDMessageFadeOut( BigFont, pszMessage,
-			1.5f,
-			TEAM_MESSAGE_Y_AXIS,
-			0,
-			0,
-			CR_UNTRANSLATED,
-			3.0f,
-			0.25f );
-		StatusBar->AttachMessage( pMsg, MAKE_ID( 'C','N','T','R' ));
-	}
-	// If necessary, send it to clients.
-	else if ( bInformClients )
-	{
-		SERVERCOMMANDS_PrintHUDMessageFadeOut( pszMessage, 1.5f, TEAM_MESSAGE_Y_AXIS, 0, 0, CR_UNTRANSLATED, 3.0f, 0.25f, "BigFont", false, MAKE_ID('C','N','T','R'), ulPlayerExtra, ServerCommandFlags::FromInt( ulFlags ) );
-	}
+	// [AK] Don't run any scripts if the target doesn't allow executing GAMEEVENT_ACTOR_DAMAGED.
+	if ( target->STFlags & STFL_NODAMAGEEVENTSCRIPT )
+		return true;
+
+	// [AK] Don't run any scripts if the target can't execute GAMEEVENT_ACTOR_DAMAGED unless
+	// all actors are forced to execute it.
+	if ((( target->STFlags & STFL_USEDAMAGEEVENTSCRIPT ) == false ) && ( gameinfo.bForceDamageEventScripts == false ))
+		return true;
+	
+	const GAMEEVENT_e DamageEvent = bBeforeArmor ? GAMEEVENT_ACTOR_DAMAGED_PREMOD : GAMEEVENT_ACTOR_DAMAGED;
+	const int originalDamage = damage;
+
+	// [AK] We somehow need to pass all the actor pointers into the script itself. A simple way
+	// to do this is temporarily spawn a temporary actor and change its actor pointers to the target,
+	// source, and inflictor. We can then use these to initialize the AAPTR_DAMAGE_TARGET,
+	// AAPTR_DAMAGE_SOURCE, and AAPTR_DAMAGE_INFLICTOR pointers of the script.
+	AActor *temp = Spawn( "MapSpot", target->x, target->y, target->z, NO_REPLACE );
+
+	temp->target = target;
+	temp->master = source;
+	temp->tracer = inflictor;
+
+	damage = GAMEMODE_HandleEvent( DamageEvent, temp, damage, GlobalACSStrings.AddString( mod ), true, damage );
+
+	// [AK] Destroy the temporary actor after executing all event scripts.
+	temp->Destroy( );
+
+	// [AK] If the new damage is zero, that means the target shouldn't take damage in P_DamageMobj.
+	// Allow P_DamageMobj to execute anyways if the original damage was zero (i.e. NODAMAGE flag).
+	return ( originalDamage == 0 || damage != 0 );
 }
 
 //*****************************************************************************
-// [BB] Expects pszMessage already to be colorized with V_ColorizeString.
-void GAMEMODE_DisplaySUBSMessage( const char *pszMessage, const bool bInformClients, const ULONG ulPlayerExtra, const ULONG ulFlags )
+//
+LONG GAMEMODE_GetEventResult( )
 {
-	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-	{
-		DHUDMessageFadeOut *pMsg = new DHUDMessageFadeOut( SmallFont, pszMessage,
-			1.5f,
-			TEAM_MESSAGE_Y_AXIS_SUB,
-			0,
-			0,
-			CR_UNTRANSLATED,
-			3.0f,
-			0.25f );
-		StatusBar->AttachMessage( pMsg, MAKE_ID( 'S','U','B','S' ));
-	}
-	// If necessary, send it to clients.
-	else if ( bInformClients )
-	{
-		SERVERCOMMANDS_PrintHUDMessageFadeOut( pszMessage, 1.5f, TEAM_MESSAGE_Y_AXIS_SUB, 0, 0, CR_UNTRANSLATED, 3.0f, 0.25f, "SmallFont", false, MAKE_ID( 'S','U','B','S' ), ulPlayerExtra, ServerCommandFlags::FromInt( ulFlags ) );
-	}
+	return g_lEventResult;
+}
+
+//*****************************************************************************
+//
+void GAMEMODE_SetEventResult( LONG lResult )
+{
+	g_lEventResult = lResult;
 }
 
 //*****************************************************************************
@@ -1043,6 +1442,9 @@ void GAMEMODE_SetCurrentMode( GAMEMODE_e GameMode )
 	default:
 		break;
 	}
+
+	// [AK] Reset the scoreboard to update the usability of the columns.
+	SCOREBOARD_Reset( );
 }
 
 //*****************************************************************************
@@ -1080,5 +1482,191 @@ void GAMEMODE_SetModifier( MODIFIER_e Modifier )
 		break;
 	default:
 		break;
+	}
+}
+
+//*****************************************************************************
+//
+ULONG GAMEMODE_GetCountdownTicks( void )
+{
+	if ( g_CurrentGameMode == GAMEMODE_SURVIVAL )
+		return ( SURVIVAL_GetCountdownTicks( ));
+	else if ( g_CurrentGameMode == GAMEMODE_INVASION )
+		return ( INVASION_GetCountdownTicks( ));
+	else if ( g_CurrentGameMode == GAMEMODE_DUEL )
+		return ( DUEL_GetCountdownTicks( ));
+	else if (( g_CurrentGameMode == GAMEMODE_LASTMANSTANDING ) || ( g_CurrentGameMode == GAMEMODE_TEAMLMS ))
+		return ( LASTMANSTANDING_GetCountdownTicks( ));
+	else if (( g_CurrentGameMode == GAMEMODE_POSSESSION ) || ( g_CurrentGameMode == GAMEMODE_TEAMPOSSESSION ))
+		return ( POSSESSION_GetCountdownTicks( ));
+
+	// [AK] The other gamemodes don't have a countdown, so just return zero.
+	return ( 0 );
+}
+
+//*****************************************************************************
+//
+player_t *GAMEMODE_GetArtifactCarrier( void )
+{
+	for ( ULONG ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
+	{
+		if ( playeringame[ulIdx] == false )
+			continue;
+
+		// [AK] Is this player carrying the terminator artifact?
+		if ( g_CurrentGameMode == GAMEMODE_TERMINATOR )
+		{
+			if ( players[ulIdx].cheats2 & CF2_TERMINATORARTIFACT )
+				return ( &players[ulIdx] );
+		}
+		// [AK] Is this player carrying the possession artifact?
+		else if (( g_CurrentGameMode == GAMEMODE_POSSESSION ) || ( g_CurrentGameMode == GAMEMODE_TEAMPOSSESSION ))
+		{
+			if ( players[ulIdx].cheats2 & CF2_POSSESSIONARTIFACT )
+				return ( &players[ulIdx] );
+		}
+		// [AK] Is this player carrying the white flag?
+		else if (( players[ulIdx].mo ) && ( players[ulIdx].mo->FindInventory( PClass::FindClass( "WhiteFlag" ), true )))
+		{
+			return ( &players[ulIdx] );
+		}
+	}
+
+	return ( NULL );
+}
+
+//*****************************************************************************
+//
+void GAMEMODE_SetLimit( GAMELIMIT_e GameLimit, int value )
+{
+	UCVarValue Val;
+
+	if ( GameLimit == GAMELIMIT_TIME )
+	{
+		Val.Float = FIXED2FLOAT( value );
+		GAMEMODE_SetGameplaySetting( &timelimit, Val, CVAR_Float );
+	}
+	else
+	{
+		FBaseCVar *pCVar = NULL;
+		Val.Int = value;
+
+		switch ( GameLimit )
+		{
+			case GAMELIMIT_FRAGS:
+				pCVar = &fraglimit;
+				break;
+
+			case GAMELIMIT_POINTS:
+				pCVar = &pointlimit;
+				break;
+
+			case GAMELIMIT_DUELS:
+				pCVar = &duellimit;
+				break;
+
+			case GAMELIMIT_WINS:
+				pCVar = &winlimit;
+				break;
+
+			case GAMELIMIT_WAVES:
+				pCVar = &wavelimit;
+				break;
+
+			default:
+				I_Error( "GAMEMODE_SetLimit: Unhandled GameLimit\n." );
+				break;
+		}
+
+		GAMEMODE_SetGameplaySetting( pCVar, Val, CVAR_Int );
+	}
+}
+
+//*****************************************************************************
+//
+void GAMEMODE_SetGameplaySetting( FBaseCVar *pCVar, UCVarValue Val, ECVarType Type )
+{
+	GAMEPLAYSETTING_s *pSetting = NULL;
+	bool bWasLocked = false;
+
+	// [AK] Check if this CVar was already configured in the current game mode.
+	for ( unsigned int i = 0; i < g_GameModes[g_CurrentGameMode].GameplaySettings.Size( ); i++ )
+	{
+		if ( g_GameModes[g_CurrentGameMode].GameplaySettings[i].pCVar != pCVar )
+			continue;
+
+		// [AK] CVars that are "offlineonly" should only be set in offline games, and
+		// CVars that are "onlineonly" should only be set in online games.
+		if ( g_GameModes[g_CurrentGameMode].GameplaySettings[i].IsOutOfScope( ))
+			continue;
+
+		pSetting = &g_GameModes[g_CurrentGameMode].GameplaySettings[i];
+		break;
+	}
+
+	// [AK] If this CVar is supposed to be locked, then temporarily disable the lock.
+	if ( pSetting != NULL )
+	{
+		bWasLocked = pSetting->bIsLocked;
+		pSetting->bIsLocked = false;
+	}
+
+	pCVar->ForceSet( Val, Type );
+
+	// [AK] After changing the value of the CVar, its saved value must also be updated.
+	// This assumes that the function's arguments "Val" and "Type" are equal to the
+	// corresponding members in GAMESETTING_s of the same CVar.
+	// Restore the lock too, if necessary.
+	if ( pSetting != NULL )
+	{
+		pSetting->bIsLocked = bWasLocked;
+		pSetting->Val = Val;
+	}
+}
+
+//*****************************************************************************
+//
+bool GAMEMODE_IsGameplaySettingLocked( FBaseCVar *pCVar )
+{
+	for ( unsigned int i = 0; i < g_GameModes[g_CurrentGameMode].GameplaySettings.Size( ); i++ )
+	{
+		if ( g_GameModes[g_CurrentGameMode].GameplaySettings[i].bIsLocked == false )
+			continue;
+
+		// [AK] If this CVar matches one that's locked on the list, then it's obviously locked.
+		if ( pCVar == g_GameModes[g_CurrentGameMode].GameplaySettings[i].pCVar )
+		{
+			// [AK] CVars that are "offlineonly" are only locked in offline games, and if they're
+			// "onlineonly" then they're only locked in online games.
+			if ( g_GameModes[g_CurrentGameMode].GameplaySettings[i].IsOutOfScope( ) == false )
+				return true;
+		}
+	}
+
+	return false;
+}
+
+//*****************************************************************************
+//
+void GAMEMODE_ResetGameplaySettings( bool bLockedOnly, bool bResetToDefault )
+{
+	// [AK] Don't let clients reset the CVars by themselves. The server will update them accordingly.
+	if ( NETWORK_InClientMode( ))
+		return;
+
+	for ( unsigned int i = 0; i < g_GameModes[g_CurrentGameMode].GameplaySettings.Size( ); i++ )
+	{
+		GAMEPLAYSETTING_s *const pSetting = &g_GameModes[g_CurrentGameMode].GameplaySettings[i];
+
+		// [AK] Only reset unlocked CVars if we need to. Also, CVars that are "offlineonly" should only
+		// be reset in offline games, and CVars that are "onlineonly" should only be reset in online games.
+		if ((( bLockedOnly ) && ( pSetting->bIsLocked == false )) || ( pSetting->IsOutOfScope( )))
+			continue;
+
+		// [AK] Do we also want to reset this CVar to its default value?
+		if ( bResetToDefault )
+			pSetting->Val = pSetting->DefaultVal;
+
+		GAMEMODE_SetGameplaySetting( pSetting->pCVar, pSetting->Val, pSetting->Type );
 	}
 }

@@ -71,10 +71,7 @@ DEFINE_ACTION_FUNCTION(AActor, A_Punch)
 	// [BC] If the player hit a player with his attack, potentially give him a medal.
 	if ( self->player )
 	{
-		if ( self->player->bStruckPlayer )
-			PLAYER_StruckPlayer( self->player );
-		else
-			self->player->ulConsecutiveHits = 0;
+		PLAYER_CheckStruckPlayer( self );
 
 		// Tell all the bots that a weapon was fired.
 		BOTS_PostWeaponFiredEvent( ULONG( self->player - players ), BOTEVENT_USEDFIST, BOTEVENT_ENEMY_USEDFIST, BOTEVENT_PLAYER_USEDFIST );
@@ -176,10 +173,7 @@ DEFINE_ACTION_FUNCTION(AActor, A_FirePistol)
 	// [BC] If the player hit a player with his attack, potentially give him a medal.
 	if ( actor->player )
 	{
-		if ( actor->player->bStruckPlayer )
-			PLAYER_StruckPlayer( actor->player );
-		else
-			actor->player->ulConsecutiveHits = 0;
+		PLAYER_CheckStruckPlayer( actor );
 
 		// Tell all the bots that a weapon was fired.
 		BOTS_PostWeaponFiredEvent( ULONG( actor->player - players ), BOTEVENT_FIREDPISTOL, BOTEVENT_ENEMY_FIREDPISTOL, BOTEVENT_PLAYER_FIREDPISTOL );
@@ -249,6 +243,15 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Saw)
 	{
 		if (!weapon->DepleteAmmo (weapon->bAltFire))
 			return;
+
+		// [AK] If we're the server, tell the clients that this player lost ammo.
+		if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( weapon->Owner ) && ( weapon->Owner->player ))
+		{
+			if ( weapon->Ammo1 )
+				SERVERCOMMANDS_TakeInventory( weapon->Owner->player - players, weapon->AmmoType1, weapon->Ammo1->Amount );
+			if ( weapon->Ammo2 )
+				SERVERCOMMANDS_TakeInventory( weapon->Owner->player - players, weapon->AmmoType2, weapon->Ammo2->Amount );
+		}
 	}
 
 	P_LineAttack (self, angle, Range, slope, damage, NAME_Melee, pufftype, false, &linetarget, &actualdamage);
@@ -266,10 +269,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Saw)
 	}
 
 	// [BC] If the player hit a player with his attack, potentially give him a medal.
-	if ( self->player->bStruckPlayer )
-		PLAYER_StruckPlayer( self->player );
-	else
-		self->player->ulConsecutiveHits = 0;
+	PLAYER_CheckStruckPlayer( self );
 
 	// [BC] If we're the server, tell clients that a weapon is being fired.
 //	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
@@ -413,10 +413,7 @@ DEFINE_ACTION_FUNCTION(AActor, A_FireShotgun)
 	}
 
 	// [BC] If the player hit a player with his attack, potentially give him a medal.
-	if ( player->bStruckPlayer )
-		PLAYER_StruckPlayer( player );
-	else
-		player->ulConsecutiveHits = 0;
+	PLAYER_CheckStruckPlayer( self );
 
 	// [BC] Tell all the bots that a weapon was fired.
 	BOTS_PostWeaponFiredEvent( ULONG( player - players ), BOTEVENT_FIREDSHOTGUN, BOTEVENT_ENEMY_FIREDSHOTGUN, BOTEVENT_PLAYER_FIREDSHOTGUN );
@@ -508,10 +505,7 @@ DEFINE_ACTION_FUNCTION(AActor, A_FireShotgun2)
 		return;
 
 	// [BC] If the player hit a player with his attack, potentially give him a medal.
-	if ( player->bStruckPlayer )
-		PLAYER_StruckPlayer( player );
-	else
-		player->ulConsecutiveHits = 0;
+	PLAYER_CheckStruckPlayer( self );
 
 	// [BC] Tell all the bots that a weapon was fired.
 	BOTS_PostWeaponFiredEvent( ULONG( player - players ), BOTEVENT_FIREDSSG, BOTEVENT_ENEMY_FIREDSSG, BOTEVENT_PLAYER_FIREDSSG );
@@ -705,10 +699,7 @@ DEFINE_ACTION_FUNCTION(AActor, A_FireCGun)
 	}
 
 	// [BC] If the player hit a player with his attack, potentially give him a medal.
-	if ( player->bStruckPlayer )
-		PLAYER_StruckPlayer( player );
-	else
-		player->ulConsecutiveHits = 0;
+	PLAYER_CheckStruckPlayer( self );
 
 	// [BC] Tell all the bots that a weapon was fired.
 	BOTS_PostWeaponFiredEvent( ULONG( player - players ), BOTEVENT_FIREDCHAINGUN, BOTEVENT_ENEMY_FIREDCHAINGUN, BOTEVENT_PLAYER_FIREDCHAINGUN );
@@ -933,9 +924,9 @@ DEFINE_ACTION_FUNCTION(AActor, A_CheckRailReload)
 	if ( self->player == NULL )
 		return;
 
-	self->player->ulRailgunShots++;
+	self->player->RailgunShots++;
 	// If we have not made our 4th shot...
-	if ((( self->player->ulRailgunShots % 4 ) == 0 ) == false )
+	if ((( self->player->RailgunShots % 4 ) == 0 ) == false )
 	{
 		// Go back to the refire frames, instead of continuing on to the reload frames.
 		if ( self->player->ReadyWeapon->GetClass( ) == PClass::FindClass("Railgun" ))
@@ -1016,14 +1007,20 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_BFGSpray)
 	if (!self->target)
 		return;
 
+	// [Proteh] Skip backwards reconciliation if the zadmflag is set
+	int lineAttackFlags = ((zadmflags & ZADF_NOUNLAGGED_BFG_TRACERS) ? ALF_NOUNLAGGED : 0);
+
+	// [AK] Check if the spray type forces collision with allies, in case sv_shootthroughallies is enabled.
+	if (GetDefaultByType(spraytype)->STFlags & STFL_FORCEALLYCOLLISION)
+		lineAttackFlags |= ALF_FORCEALLYCHECK;
+
 	// offset angles from its attack angle
 	for (i = 0; i < numrays; i++)
 	{
 		an = self->angle - ANG90/2 + ANG90/numrays*i;
 
 		// self->target is the originator (player) of the missile
-		// [Proteh] Skip backwards reconciliation if the zadmflag is set
-		P_AimLineAttack (self->target, an, 16*64*FRACUNIT, &linetarget, ANGLE_1*32, ((zadmflags & ZADF_NOUNLAGGED_BFG_TRACERS) ? ALF_NOUNLAGGED : 0));
+		P_AimLineAttack (self->target, an, 16*64*FRACUNIT, &linetarget, ANGLE_1*32, lineAttackFlags);
 
 		if (!linetarget)
 			continue;

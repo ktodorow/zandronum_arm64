@@ -115,6 +115,9 @@ static	bool				g_bDemoPaused = false;
 // [BB] Do we want to skip to the next map in the demo we are playing at the moment?
 static	bool				g_bSkipToNextMap = false;
 
+// [AK] Did the player who recorded the demo use the unrestricted spectator mode?
+static	bool				g_ConsolePlayerUnrestricted = false;
+
 // [BB] How many tics are we still supposed to skip in the demo we are playing at the moment?
 static	ULONG				g_ulTicsToSkip = 0;
 
@@ -144,6 +147,8 @@ static	player_t			g_demoCameraPlayer;
 
 // [Dusk] ZCLD magic number signature
 static	const DWORD			g_demoSignature = MAKE_ID( 'Z', 'C', 'L', 'D' );
+
+static	unsigned int		g_TicsPlayedBack = 0;
 
 // [Dusk] Should we perform demo authentication?
 CUSTOM_CVAR( Bool, demo_pure, true, CVAR_ARCHIVE | CVAR_GLOBALCONFIG )
@@ -179,36 +184,36 @@ void CLIENTDEMO_BeginRecording( const char *pszDemoName )
 	// Write our header.
 	// [Dusk] Write a static "ZCLD" which is consistent between
 	// different Zandronum versions.
-	NETWORK_WriteLong( &g_ByteStream, g_demoSignature );
+	g_ByteStream.WriteLong( g_demoSignature );
 
 	// Write the length of the demo. Of course, we can't complete this quite yet!
-	NETWORK_WriteByte( &g_ByteStream, CLD_DEMOLENGTH );
+	g_ByteStream.WriteByte( CLD_DEMOLENGTH );
 	g_ByteStream.pbStream += 4;
 
 	// Write version information helpful for this demo.
-	NETWORK_WriteByte( &g_ByteStream, CLD_DEMOVERSION );
-	NETWORK_WriteShort( &g_ByteStream, DEMOGAMEVERSION );
-	NETWORK_WriteString( &g_ByteStream, GetVersionStringRev() );
-	NETWORK_WriteByte( &g_ByteStream, BUILD_ID );
-	NETWORK_WriteLong( &g_ByteStream, rngseed );
+	g_ByteStream.WriteByte( CLD_DEMOVERSION );
+	g_ByteStream.WriteShort( DEMOGAMEVERSION );
+	g_ByteStream.WriteString( GetVersionStringRev() );
+	g_ByteStream.WriteByte( BUILD_ID );
+	g_ByteStream.WriteLong( rngseed );
 
 	// [Dusk] Write the amount of WADs and their names, incl. IWAD
-	NETWORK_WriteByte( &g_ByteStream, CLD_DEMOWADS );
+	g_ByteStream.WriteByte( CLD_DEMOWADS );
 	ULONG ulWADCount = 1 + NETWORK_GetPWADList().Size( ); // 1 for IWAD
-	NETWORK_WriteShort( &g_ByteStream, ulWADCount );
-	NETWORK_WriteString( &g_ByteStream, NETWORK_GetIWAD ( ) );
+	g_ByteStream.WriteShort( ulWADCount );
+	g_ByteStream.WriteString( NETWORK_GetIWAD ( ) );
 
 	for ( unsigned int i = 0; i < NETWORK_GetPWADList().Size(); ++i )
-		NETWORK_WriteString( &g_ByteStream, NETWORK_GetPWADList()[i].name );
+		g_ByteStream.WriteString( NETWORK_GetPWADList()[i].name );
 
 	// [Dusk] Write the network authentication string, we need it to
 	// ensure we have the right WADs loaded.
-	NETWORK_WriteString( &g_ByteStream, g_lumpsAuthenticationChecksum.GetChars( ) );
+	g_ByteStream.WriteString( g_lumpsAuthenticationChecksum.GetChars( ) );
 
 	// [Dusk] Also generate and write the map collection checksum so we can
 	// authenticate the maps.
 	NETWORK_MakeMapCollectionChecksum( );
-	NETWORK_WriteString( &g_ByteStream, g_MapCollectionChecksum.GetChars( ) );
+	g_ByteStream.WriteString( g_MapCollectionChecksum.GetChars( ) );
 
 /*
 	// Write cvars chunk.
@@ -221,32 +226,37 @@ void CLIENTDEMO_BeginRecording( const char *pszDemoName )
 
 	// Indicate that we're done with header information, and are ready
 	// to move onto the body of the demo.
-	NETWORK_WriteByte( &g_ByteStream, CLD_BODYSTART );
+	g_ByteStream.WriteByte( CLD_BODYSTART );
 
 	CLIENT_SetServerLagging( false );
+
+	// [AK] When recording begins, mark if whether the local player is using the
+	// unrestricted spectator mode or not.
+	CLIENTDEMO_WriteConsolePlayerUnrestricted( cl_spectatormode == SPECMODE_NO_RESTRICTIONS );
 }
 
 //*****************************************************************************
 //
 bool CLIENTDEMO_ProcessDemoHeader( void )
 {
-	bool	bBodyStart;
-	LONG	lDemoVersion;
-	LONG	lCommand;
+	bool		bBodyStart;
+	LONG		lDemoVersion;
+	LONG		lCommand;
+	const char	*szVersionString;
 
 	// [Dusk] Check ZCLD instead of CLD_DEMOSTART
-	if ( NETWORK_ReadLong( &g_ByteStream ) != g_demoSignature )
+	if ( g_ByteStream.ReadLong() != g_demoSignature )
 	{
 		// [Dusk] Rewind back and try see if this is an old demo. Old demos started
 		// with a CLD_DEMOSTART (which was non-constant), followed by 12345678.
 		g_ByteStream.pbStream -= 4;
-		NETWORK_ReadByte( &g_ByteStream ); // Skip CLD_DEMOSTART
-		if ( NETWORK_ReadLong( &g_ByteStream ) == 12345678 )
+		g_ByteStream.ReadByte(); // Skip CLD_DEMOSTART
+		if ( g_ByteStream.ReadLong() == 12345678 )
 		{
 			// [Dusk] Dig out the version string. It should be 13 bytes in.
 			g_ByteStream.pbStream = g_pbDemoBuffer + 13;
 			I_Error( "CLIENTDEMO_ProcessDemoHeader: This is an old, version %s demo file.\n", 
-				NETWORK_ReadString( &g_ByteStream ));
+				g_ByteStream.ReadString());
 		}
 
 		// [Dusk] Otherwise, this file is just garbage.
@@ -254,40 +264,46 @@ bool CLIENTDEMO_ProcessDemoHeader( void )
 		return ( false );
 	}
 
-	if ( NETWORK_ReadByte( &g_ByteStream ) != CLD_DEMOLENGTH )
+	if ( g_ByteStream.ReadByte() != CLD_DEMOLENGTH )
 	{
 		I_Error( "CLIENTDEMO_ProcessDemoHeader: Expected CLD_DEMOLENGTH.\n" );
 		return ( false );
 	}
 
-	g_lDemoLength = NETWORK_ReadLong( &g_ByteStream );
+	g_lDemoLength = g_ByteStream.ReadLong();
 	g_ByteStream.pbStreamEnd = g_pbDemoBuffer + g_lDemoLength + ( g_lDemoLength & 1 );
 
 	// Continue to read header commands until we reach the body of the demo.
 	bBodyStart = false;
 	while ( bBodyStart == false )
 	{  
-		lCommand = NETWORK_ReadByte( &g_ByteStream );
+		lCommand = g_ByteStream.ReadByte();
 
 		switch ( lCommand )
 		{
 		case CLD_DEMOVERSION:
 
 			// Read in the DEMOGAMEVERSION the demo was recorded with.
-			lDemoVersion = NETWORK_ReadShort( &g_ByteStream );
+			lDemoVersion = g_ByteStream.ReadShort();
 			if ( lDemoVersion < MINDEMOVERSION )
 				I_Error( "Demo requires an older version of " GAMENAME "!\n" );
 
 			// Read in the DOTVERSIONSTR the demo was recorded with.
-			Printf( "Version %s demo\n", NETWORK_ReadString( &g_ByteStream ));
+			// [AK] If the version string stored in the demo doesn't match the
+			// current version we're using, don't play the demo.
+			szVersionString = g_ByteStream.ReadString();
+			if ( stricmp( szVersionString, GetVersionStringRev() ) != 0 )
+				I_Error( "Demo requires version %s. You are currently using version %s.\n", szVersionString, GetVersionStringRev() );
+
+			Printf( "Version %s demo\n", szVersionString );
 
 			// [Dusk] BUILD_ID is now stored in the demo. We don't do anything
 			// with it - it's of interest for external applications only. Just
 			// skip it here.
-			NETWORK_ReadByte( &g_ByteStream );
+			g_ByteStream.ReadByte();
 
 			// Read in the random number generator seed.
-			rngseed = NETWORK_ReadLong( &g_ByteStream );
+			rngseed = g_ByteStream.ReadLong();
 			FRandom::StaticClearRandom( );
 			break;
 /*
@@ -332,20 +348,21 @@ void CLIENTDEMO_WriteUserInfo( void )
 		(ULONG)strlen( PlayerClasses[players[consoleplayer].CurrentPlayerClass].Type->Meta.GetMetaString( APMETA_DisplayName )));
 
 	// Write the header.
-	NETWORK_WriteByte( &g_ByteStream, CLD_USERINFO );
+	g_ByteStream.WriteByte( CLD_USERINFO );
 
 	// Write the player's userinfo.
-	NETWORK_WriteString( &g_ByteStream, players[consoleplayer].userinfo.GetName() );
-	NETWORK_WriteByte( &g_ByteStream, players[consoleplayer].userinfo.GetGender() );
-	NETWORK_WriteLong( &g_ByteStream, players[consoleplayer].userinfo.GetColor() );
-	NETWORK_WriteLong( &g_ByteStream, players[consoleplayer].userinfo.GetAimDist() );
-	NETWORK_WriteString( &g_ByteStream, skins[players[consoleplayer].userinfo.GetSkin()].name );
-	NETWORK_WriteLong( &g_ByteStream, players[consoleplayer].userinfo.GetRailColor() );
-	NETWORK_WriteByte( &g_ByteStream, players[consoleplayer].userinfo.GetHandicap() );
-	NETWORK_WriteByte( &g_ByteStream, players[consoleplayer].userinfo.GetTicsPerUpdate() );
-	NETWORK_WriteByte( &g_ByteStream, players[consoleplayer].userinfo.GetConnectionType() );
-	NETWORK_WriteByte( &g_ByteStream, players[consoleplayer].userinfo.GetClientFlags() ); // [CK] List of booleans
-	NETWORK_WriteString( &g_ByteStream, PlayerClasses[players[consoleplayer].CurrentPlayerClass].Type->Meta.GetMetaString( APMETA_DisplayName ));
+	g_ByteStream.WriteString( players[consoleplayer].userinfo.GetName() );
+	g_ByteStream.WriteByte( players[consoleplayer].userinfo.GetGender() );
+	g_ByteStream.WriteByte( players[consoleplayer].userinfo.GetColorSet() );
+	g_ByteStream.WriteLong( players[consoleplayer].userinfo.GetColor() );
+	g_ByteStream.WriteLong( players[consoleplayer].userinfo.GetAimDist() );
+	g_ByteStream.WriteString( skins[players[consoleplayer].userinfo.GetSkin()].name );
+	g_ByteStream.WriteLong( players[consoleplayer].userinfo.GetRailColor() );
+	g_ByteStream.WriteByte( players[consoleplayer].userinfo.GetHandicap() );
+	g_ByteStream.WriteByte( players[consoleplayer].userinfo.GetTicsPerUpdate() );
+	g_ByteStream.WriteByte( players[consoleplayer].userinfo.GetConnectionType() );
+	g_ByteStream.WriteByte( players[consoleplayer].userinfo.GetClientFlags() ); // [CK] List of booleans
+	g_ByteStream.WriteString( PlayerClasses[players[consoleplayer].CurrentPlayerClass].Type->Meta.GetMetaString( APMETA_DisplayName ));
 }
 
 //*****************************************************************************
@@ -353,18 +370,19 @@ void CLIENTDEMO_WriteUserInfo( void )
 void CLIENTDEMO_ReadUserInfo( void )
 {
 	userinfo_t &info = players[consoleplayer].userinfo;
-	*static_cast<FStringCVar *>(info[NAME_Name]) =  NETWORK_ReadString( &g_ByteStream );
+	*static_cast<FStringCVar *>(info[NAME_Name]) =  g_ByteStream.ReadString();
 	// [BB] Make sure that the gender is valid.
-	*static_cast<FIntCVar *>(info[NAME_Gender]) = clamp ( NETWORK_ReadByte( &g_ByteStream ), 0, 2 );
-	info.ColorChanged( NETWORK_ReadLong( &g_ByteStream ) );
-	*static_cast<FFloatCVar *>(info[NAME_Autoaim]) = static_cast<float> ( NETWORK_ReadLong( &g_ByteStream ) ) / ANGLE_1 ;
-	*static_cast<FIntCVar *>(info[NAME_Skin]) = R_FindSkin( NETWORK_ReadString( &g_ByteStream ), players[consoleplayer].CurrentPlayerClass );
-	*static_cast<FIntCVar *>(info[NAME_RailColor]) = NETWORK_ReadLong( &g_ByteStream );
-	*static_cast<FIntCVar *>(info[NAME_Handicap]) = NETWORK_ReadByte( &g_ByteStream );
-	info.TicsPerUpdateChanged ( NETWORK_ReadByte( &g_ByteStream ) );
-	info.ConnectionTypeChanged ( NETWORK_ReadByte( &g_ByteStream ) );
-	info.ClientFlagsChanged ( NETWORK_ReadByte( &g_ByteStream ) ); // [CK] Client booleans
-	info.PlayerClassChanged ( NETWORK_ReadString( &g_ByteStream ));
+	*static_cast<FIntCVar *>(info[NAME_Gender]) = clamp ( g_ByteStream.ReadByte(), 0, 2 );
+	*static_cast<FIntCVar *>(info[NAME_ColorSet]) = g_ByteStream.ReadByte();
+	info.ColorChanged( g_ByteStream.ReadLong() );
+	*static_cast<FFloatCVar *>(info[NAME_Autoaim]) = static_cast<float> ( g_ByteStream.ReadLong() ) / ANGLE_1 ;
+	*static_cast<FIntCVar *>(info[NAME_Skin]) = R_FindSkin( g_ByteStream.ReadString(), players[consoleplayer].CurrentPlayerClass );
+	*static_cast<FIntCVar *>(info[NAME_RailColor]) = g_ByteStream.ReadLong();
+	*static_cast<FIntCVar *>(info[NAME_Handicap]) = g_ByteStream.ReadByte();
+	info.TicsPerUpdateChanged ( g_ByteStream.ReadByte() );
+	info.ConnectionTypeChanged ( g_ByteStream.ReadByte() );
+	info.ClientFlagsChanged ( g_ByteStream.ReadByte() ); // [CK] Client booleans
+	info.PlayerClassChanged ( g_ByteStream.ReadString());
 
 	R_BuildPlayerTranslation( consoleplayer );
 	if ( StatusBar )
@@ -393,16 +411,16 @@ void CLIENTDEMO_WriteTiccmd( ticcmd_t *pCmd )
 	clientdemo_CheckDemoBuffer( 14 );
 
 	// Write the header.
-	NETWORK_WriteByte( &g_ByteStream, CLD_TICCMD );
+	g_ByteStream.WriteByte( CLD_TICCMD );
 
 	// Write the contents of the ticcmd.
-	NETWORK_WriteShort( &g_ByteStream, pCmd->ucmd.yaw );
-	NETWORK_WriteShort( &g_ByteStream, pCmd->ucmd.roll );
-	NETWORK_WriteShort( &g_ByteStream, pCmd->ucmd.pitch );
-	NETWORK_WriteByte( &g_ByteStream, pCmd->ucmd.buttons );
-	NETWORK_WriteShort( &g_ByteStream, pCmd->ucmd.upmove );
-	NETWORK_WriteShort( &g_ByteStream, pCmd->ucmd.forwardmove );
-	NETWORK_WriteShort( &g_ByteStream, pCmd->ucmd.sidemove );
+	g_ByteStream.WriteShort( pCmd->ucmd.yaw );
+	g_ByteStream.WriteShort( pCmd->ucmd.roll );
+	g_ByteStream.WriteShort( pCmd->ucmd.pitch );
+	g_ByteStream.WriteByte( pCmd->ucmd.buttons );
+	g_ByteStream.WriteShort( pCmd->ucmd.upmove );
+	g_ByteStream.WriteShort( pCmd->ucmd.forwardmove );
+	g_ByteStream.WriteShort( pCmd->ucmd.sidemove );
 }
 
 //*****************************************************************************
@@ -410,13 +428,13 @@ void CLIENTDEMO_WriteTiccmd( ticcmd_t *pCmd )
 void CLIENTDEMO_ReadTiccmd( ticcmd_t *pCmd )
 {
 	// Read the contents of ticcmd.
-	pCmd->ucmd.yaw = NETWORK_ReadShort( &g_ByteStream );
-	pCmd->ucmd.roll = NETWORK_ReadShort( &g_ByteStream );
-	pCmd->ucmd.pitch = NETWORK_ReadShort( &g_ByteStream );
-	pCmd->ucmd.buttons = NETWORK_ReadByte( &g_ByteStream );
-	pCmd->ucmd.upmove = NETWORK_ReadShort( &g_ByteStream );
-	pCmd->ucmd.forwardmove = NETWORK_ReadShort( &g_ByteStream );
-	pCmd->ucmd.sidemove = NETWORK_ReadShort( &g_ByteStream );
+	pCmd->ucmd.yaw = g_ByteStream.ReadShort();
+	pCmd->ucmd.roll = g_ByteStream.ReadShort();
+	pCmd->ucmd.pitch = g_ByteStream.ReadShort();
+	pCmd->ucmd.buttons = g_ByteStream.ReadByte();
+	pCmd->ucmd.upmove = g_ByteStream.ReadShort();
+	pCmd->ucmd.forwardmove = g_ByteStream.ReadShort();
+	pCmd->ucmd.sidemove = g_ByteStream.ReadShort();
 }
 
 //*****************************************************************************
@@ -427,7 +445,7 @@ void CLIENTDEMO_WritePacket( BYTESTREAM_s *pByteStream )
 	// more space.
 	clientdemo_CheckDemoBuffer( pByteStream->pbStreamEnd - pByteStream->pbStream );
 
-	NETWORK_WriteBuffer( &g_ByteStream, pByteStream->pbStream, pByteStream->pbStreamEnd - pByteStream->pbStream );
+	g_ByteStream.WriteBuffer( pByteStream->pbStream, pByteStream->pbStreamEnd - pByteStream->pbStream );
 }
 
 //*****************************************************************************
@@ -481,7 +499,7 @@ void CLIENTDEMO_ReadPacket( void )
 
 	while ( 1 )
 	{  
-		lCommand = NETWORK_ReadByte( &g_ByteStream );
+		lCommand = g_ByteStream.ReadByte();
 
 		// [TP/BB] Reset the bit reading buffer.
 		g_ByteStream.bitBuffer = NULL;
@@ -504,6 +522,7 @@ void CLIENTDEMO_ReadPacket( void )
 		case CLD_TICCMD:
 
 			CLIENTDEMO_ReadTiccmd( &players[consoleplayer].cmd );
+			++g_TicsPlayedBack;
 
 			// After we write our ticcmd, we're done for this tic.
 			if ( CLIENTDEMO_IsSkipping() == false )
@@ -523,14 +542,14 @@ void CLIENTDEMO_ReadPacket( void )
 			break;
 		case CLD_LOCALCOMMAND:
 
-			switch( static_cast<ClientDemoLocalCommand>( NETWORK_ReadByte( &g_ByteStream )))
+			switch( static_cast<ClientDemoLocalCommand>( g_ByteStream.ReadByte()))
 			{
 			case CLD_LCMD_INVUSE:
 
 				{
 					AInventory	*pInventory;
 
-					pszString = NETWORK_ReadString( &g_ByteStream );
+					pszString = g_ByteStream.ReadString();
 
 					if ( players[consoleplayer].mo )
 					{
@@ -550,15 +569,55 @@ void CLIENTDEMO_ReadPacket( void )
 				break;
 			case CLD_LCMD_CHEAT:
 
-				cht_DoCheat( &players[consoleplayer], NETWORK_ReadByte( &g_ByteStream ));
+				cht_DoCheat( &players[consoleplayer], g_ByteStream.ReadByte());
 				break;
 			case CLD_LCMD_WARPCHEAT:
 
 				{
-					fixed_t x = NETWORK_ReadLong( &g_ByteStream );
-					fixed_t y = NETWORK_ReadLong( &g_ByteStream );
+					fixed_t x = g_ByteStream.ReadLong();
+					fixed_t y = g_ByteStream.ReadLong();
 					Printf( "warp %g %g\n", FIXED2FLOAT( x ), FIXED2FLOAT( y ));
 					P_TeleportMove( players[consoleplayer].mo, x, y, ONFLOORZ, true );
+				}
+				break;
+			case CLD_LCMD_SETSTATUS:
+
+				{
+					const int statuses = g_ByteStream.ReadByte( );
+					const bool enable = !!g_ByteStream.ReadByte( );
+					PLAYER_SetStatus( &players[consoleplayer], statuses, !!enable );
+				}
+				break;
+			case CLD_LCMD_FREECHASECAM:
+
+				{
+					const bool enable = !!g_ByteStream.ReadByte( );
+					const fixed_t angle = g_ByteStream.ReadLong( );
+
+					FreeChasecam::enabled = enable;
+
+					if ( players[consoleplayer].mo != nullptr )
+						players[consoleplayer].mo->angle = angle;
+				}
+				break;
+			case CLD_LCMD_CONSOLEPLAYERUNRESTRICTED:
+
+				{
+					g_ConsolePlayerUnrestricted = !!g_ByteStream.ReadByte( );
+
+					if (( players[consoleplayer].bSpectating ) && ( players[consoleplayer].mo != nullptr ))
+					{
+						if ( g_ConsolePlayerUnrestricted )
+						{
+							players[consoleplayer].mo->flags |= MF_NOCLIP;
+							players[consoleplayer].cheats |= (CF_FLY | CF_NOCLIP | CF_NOCLIP2);
+						}
+						else
+						{
+							players[consoleplayer].mo->flags &= ~MF_NOCLIP;
+							players[consoleplayer].cheats &= ~(CF_NOCLIP | CF_NOCLIP2);
+						}
+					}
 				}
 				break;
 			}
@@ -587,13 +646,13 @@ void CLIENTDEMO_FinishRecording( void )
 	BYTESTREAM_s	ByteStream;
 
 	// Write our header.
-	NETWORK_WriteByte( &g_ByteStream, CLD_DEMOEND );
+	g_ByteStream.WriteByte( CLD_DEMOEND );
 
 	// Go back real quick and write the length of this demo.
 	lDemoLength = g_ByteStream.pbStream - g_pbDemoBuffer;
 	ByteStream.pbStream = g_pbDemoBuffer + 5;
 	ByteStream.pbStreamEnd = g_ByteStream.pbStreamEnd;
-	NETWORK_WriteLong( &ByteStream, lDemoLength );
+	ByteStream.WriteLong( lDemoLength );
 
 	// Write the contents of the buffer to the file, and free the memory we
 	// allocated for the demo.
@@ -635,6 +694,7 @@ void CLIENTDEMO_DoPlayDemo( const char *pszDemoName )
 
 	g_ByteStream.pbStream = g_pbDemoBuffer;
 	g_ByteStream.pbStreamEnd = g_pbDemoBuffer + lDemoLength;
+	g_TicsPlayedBack = 0;
 
 	if ( CLIENTDEMO_ProcessDemoHeader( ))
 	{
@@ -720,11 +780,11 @@ void CLIENTDEMO_WriteLocalCommand( ClientDemoLocalCommand command, const char* p
 	else
 		clientdemo_CheckDemoBuffer( 2 );
 
-	NETWORK_WriteByte( &g_ByteStream, CLD_LOCALCOMMAND );
-	NETWORK_WriteByte( &g_ByteStream, command );
+	g_ByteStream.WriteByte( CLD_LOCALCOMMAND );
+	g_ByteStream.WriteByte( command );
 
 	if ( pszArg != NULL )
-		NETWORK_WriteString( &g_ByteStream, pszArg );
+		g_ByteStream.WriteString( pszArg );
 }
 
 //*****************************************************************************
@@ -734,9 +794,9 @@ void CLIENTDEMO_WriteLocalCommand( ClientDemoLocalCommand command, const char* p
 void CLIENTDEMO_WriteCheat ( ECheatCommand cheat )
 {
 	clientdemo_CheckDemoBuffer( 3 );
-	NETWORK_WriteByte( &g_ByteStream, CLD_LOCALCOMMAND );
-	NETWORK_WriteByte( &g_ByteStream, CLD_LCMD_CHEAT );
-	NETWORK_WriteByte( &g_ByteStream, cheat );
+	g_ByteStream.WriteByte( CLD_LOCALCOMMAND );
+	g_ByteStream.WriteByte( CLD_LCMD_CHEAT );
+	g_ByteStream.WriteByte( cheat );
 }
 
 //*****************************************************************************
@@ -744,10 +804,46 @@ void CLIENTDEMO_WriteCheat ( ECheatCommand cheat )
 void CLIENTDEMO_WriteWarpCheat ( fixed_t x, fixed_t y )
 {
 	clientdemo_CheckDemoBuffer( 10 );
-	NETWORK_WriteByte( &g_ByteStream, CLD_LOCALCOMMAND );
-	NETWORK_WriteByte( &g_ByteStream, CLD_LCMD_WARPCHEAT );
-	NETWORK_WriteLong( &g_ByteStream, x );
-	NETWORK_WriteLong( &g_ByteStream, y );
+	g_ByteStream.WriteByte( CLD_LOCALCOMMAND );
+	g_ByteStream.WriteByte( CLD_LCMD_WARPCHEAT );
+	g_ByteStream.WriteLong( x );
+	g_ByteStream.WriteLong( y );
+}
+
+//*****************************************************************************
+//
+void CLIENTDEMO_WriteSetStatus ( const int statuses, const bool enable )
+{
+	// [AK] Don't write the command if no statuses are being updated.
+	if ( statuses == 0 )
+		return;
+
+	clientdemo_CheckDemoBuffer( 4 );
+	g_ByteStream.WriteByte( CLD_LOCALCOMMAND );
+	g_ByteStream.WriteByte( CLD_LCMD_SETSTATUS );
+	g_ByteStream.WriteByte( statuses );
+	g_ByteStream.WriteByte( enable );
+}
+
+//*****************************************************************************
+//
+void CLIENTDEMO_WriteFreeChasecam( const bool enable, const fixed_t angle )
+{
+	clientdemo_CheckDemoBuffer( 7 );
+	g_ByteStream.WriteByte( CLD_LOCALCOMMAND );
+	g_ByteStream.WriteByte( CLD_LCMD_FREECHASECAM );
+	g_ByteStream.WriteByte( enable );
+	g_ByteStream.WriteLong( angle );
+}
+
+//*****************************************************************************
+//
+void CLIENTDEMO_WriteConsolePlayerUnrestricted( const bool enable )
+{
+	clientdemo_CheckDemoBuffer( 3 );
+	g_ByteStream.WriteByte( CLD_LOCALCOMMAND );
+	g_ByteStream.WriteByte( CLD_LCMD_CONSOLEPLAYERUNRESTRICTED );
+	g_ByteStream.WriteByte( enable );
 }
 
 //*****************************************************************************
@@ -821,6 +917,22 @@ bool CLIENTDEMO_IsInFreeSpectateMode( void )
 	const AActor *pCamera = players[consoleplayer].camera;
 	return ( pCamera && ( pCamera == g_demoCameraPlayer.mo ) );
 }
+
+//*****************************************************************************
+//
+bool CLIENTDEMO_IsConsolePlayerUnrestricted( void )
+{
+	return g_ConsolePlayerUnrestricted;
+}
+
+//*****************************************************************************
+//
+bool CLIENTDEMO_ShouldLetFreeSpectatorThink( void )
+{
+	// [AK] Let the free spectator "think" while using the free chasecam to control the camera's movement.
+	return (( CLIENTDEMO_IsInFreeSpectateMode( )) || ( FreeChasecam::IsBeingUsed( )));
+}
+
 //*****************************************************************************
 //
 void CLIENTDEMO_SetFreeSpectatorTiccmd( ticcmd_t *pCmd )
@@ -853,6 +965,35 @@ bool CLIENTDEMO_IsFreeSpectatorPlayer( player_t *pPlayer )
 
 //*****************************************************************************
 //
+void CLIENTDEMO_SpawnFreeSpectatorPlayer( void )
+{
+	const AActor *pCamera = players[consoleplayer].camera;
+	player_t *p = &g_demoCameraPlayer;
+
+	p->bSpectating = true;
+	p->cls = PlayerClasses[p->CurrentPlayerClass].Type;
+	
+	// [AK] If the local player's camera is invalid, just spawn the free spectator player at the center of the map.
+	if ( pCamera != NULL )
+	{
+		p->mo = static_cast<APlayerPawn *>( Spawn( p->cls, pCamera->x, pCamera->y, pCamera->z + pCamera->height, NO_REPLACE ));
+		p->mo->angle = pCamera->angle;
+	}
+	else
+	{
+		p->mo = static_cast<APlayerPawn *>( Spawn( p->cls, 0, 0, 0, NO_REPLACE ));
+	}
+
+	p->mo->flags |= (MF_NOGRAVITY);
+	p->mo->player = p;
+	p->DesiredFOV = p->FOV = 90.f;
+	p->crouchfactor = FRACUNIT;
+	PLAYER_SetDefaultSpectatorValues( p );
+	p->camera = p->mo;
+}
+
+//*****************************************************************************
+//
 void CLIENTDEMO_ClearFreeSpectatorPlayer( void )
 {
 	if ( g_demoCameraPlayer.mo != NULL )
@@ -875,18 +1016,18 @@ void CLIENTDEMO_ClearFreeSpectatorPlayer( void )
 void CLIENTDEMO_ReadDemoWads( void )
 {
 	// Read the count of WADs
-	ULONG ulWADCount = NETWORK_ReadShort( &g_ByteStream );
+	ULONG ulWADCount = g_ByteStream.ReadShort();
 
 	// Read the names of WADs and store them in the array
 	TArray<FString> WadNames;
 	for ( ULONG i = 0; i < ulWADCount; i++ )
-		WadNames.Push( NETWORK_ReadString( &g_ByteStream ) );
+		WadNames.Push( g_ByteStream.ReadString() );
 
 	// Read the authentication strings and check that it matches our current
 	// checksum. If not, inform the user that the demo authentication failed,
 	// and display some hopefully helpful information
-	FString demoHash = NETWORK_ReadString( &g_ByteStream );
-	FString demoMapHash = NETWORK_ReadString( &g_ByteStream );
+	FString demoHash = g_ByteStream.ReadString();
+	FString demoMapHash = g_ByteStream.ReadString();
 
 	// Generate the map collection checksum on our end
 	NETWORK_MakeMapCollectionChecksum( );
@@ -998,29 +1139,61 @@ CCMD( demo_skiptics )
 	}
 }
 
+// Skips tics to a certain point in the demo.
+CCMD( demo_skipto )
+{
+	// This command shouldn't do anything if a demo isn't playing.
+	if ( CLIENTDEMO_IsPlaying( ) == false )
+		return;
+
+	if ( argv.argc() > 1 )
+	{
+		const int ticPositionSigned = atoi( argv[1] );
+
+		if ( ticPositionSigned >= 0 )
+		{
+			const unsigned int ticPosition = static_cast<unsigned int>( ticPositionSigned );
+			if ( ticPosition >= g_TicsPlayedBack )
+			{
+				g_ulTicsToSkip = ticPosition - g_TicsPlayedBack;
+			}
+			else
+			{
+				Printf( "That position is in the past. You cannot rewind demos.\n" );
+			}
+		}
+		else
+		{
+			Printf( "You can't skip to a negative position!\n" );
+		}
+	}
+}
+
+CCMD( demo_ticsplayed )
+{
+	// This command shouldn't do anything if a demo isn't playing.
+	if ( CLIENTDEMO_IsPlaying( ) == false )
+		return;
+
+	const unsigned int minutes = (g_TicsPlayedBack / TICRATE) / 60;
+	const unsigned int seconds = (g_TicsPlayedBack / TICRATE) % 60;
+	Printf( "Tics played back so far: %u (%02u:%02u)\n", g_TicsPlayedBack, minutes, seconds );
+	Printf( "Use 'demo_skipto %u' to skip to this point when playing back another time.\n", g_TicsPlayedBack );
+}
+
 CCMD( demo_spectatefreely )
 {
 	// [Spleen] This command shouldn't do anything if a demo isn't playing.
 	if ( CLIENTDEMO_IsPlaying( ) == false )
 		return;
 
-	const AActor *pCamera = players[consoleplayer].camera;
-	if ( pCamera != g_demoCameraPlayer.mo )
+	if ( players[consoleplayer].camera != g_demoCameraPlayer.mo )
 	{
 		CLIENTDEMO_ClearFreeSpectatorPlayer();
-		player_t *p = &g_demoCameraPlayer;
-		p->bSpectating = true;
-		p->cls = PlayerClasses[p->CurrentPlayerClass].Type;
-		p->mo = static_cast<APlayerPawn *> (Spawn (p->cls, pCamera->x, pCamera->y, pCamera->z + pCamera->height , NO_REPLACE));
-		p->mo->angle = pCamera->angle;
-		p->mo->flags |= (MF_NOGRAVITY);
-		p->mo->player = p;
-		p->DesiredFOV = p->FOV = 90.f;
-		p->crouchfactor = FRACUNIT;
-		PLAYER_SetDefaultSpectatorValues ( p );
+		CLIENTDEMO_SpawnFreeSpectatorPlayer();
+
 		players[consoleplayer].camera = g_demoCameraPlayer.mo;
-		p->camera = p->mo;
 		if ( StatusBar )
-			StatusBar->AttachToPlayer ( p );
+			StatusBar->AttachToPlayer ( &g_demoCameraPlayer );
 	}
 }

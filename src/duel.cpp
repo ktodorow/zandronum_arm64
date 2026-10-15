@@ -62,17 +62,12 @@
 #include "network.h"
 #include "p_effect.h"
 #include "sbar.h"
-#include "scoreboard.h"
+#include "st_hud.h"
 #include "sv_commands.h"
 #include "team.h"
 #include "v_video.h"
-
-//*****************************************************************************
-//	MISC CRAP THAT SHOULDN'T BE HERE BUT HAS TO BE BECAUSE OF SLOPPY CODING
-
-void	SERVERCONSOLE_UpdateScoreboard( );
-
-EXTERN_CVAR( Int,  cl_respawninvuleffect )
+// [RK] New include
+#include "d_netinf.h"
 
 //*****************************************************************************
 //	VARIABLES
@@ -109,7 +104,7 @@ void DUEL_Tick( void )
 		}
 
 		// Two players are here now, begin the countdown!
-		if ( DUEL_CountActiveDuelers( ) == 2 )
+		if ( GAME_CountActivePlayers( ) == 2 )
 		{
 			// [BB] Skip countdown and map reset if the map is supposed to be a lobby.
 			if ( GAMEMODE_IsLobbyMap( ) )
@@ -144,23 +139,6 @@ void DUEL_Tick( void )
 	default: //Satisfy GCC
 		break;
 	}
-}
-
-//*****************************************************************************
-//
-ULONG DUEL_CountActiveDuelers( void )
-{
-	ULONG	ulIdx;
-	ULONG	ulDuelers;
-
-	ulDuelers = 0;
-	for ( ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
-	{
-		if (( playeringame[ulIdx] ) && ( players[ulIdx].bSpectating == false ))
-			ulDuelers++;
-	}
-
-	return ( ulDuelers );
 }
 
 //*****************************************************************************
@@ -213,8 +191,6 @@ void DUEL_StartCountdown( ULONG ulTicks )
 //
 void DUEL_DoFight( void )
 {
-	DHUDMessageFadeOut	*pMsg;
-
 	// No longer waiting to duel.
 	if ( NETWORK_InClientMode() == false )
 	{
@@ -237,20 +213,8 @@ void DUEL_DoFight( void )
 		// Play fight sound.
 		ANNOUNCER_PlayEntry( cl_announcer, "Fight" );
 
-		// [EP] Clear all the HUD messages.
-		StatusBar->DetachAllMessages();
-
 		// Display "FIGHT!" HUD message.
-		pMsg = new DHUDMessageFadeOut( BigFont, "FIGHT!",
-			160.4f,
-			75.0f,
-			320,
-			200,
-			CR_RED,
-			2.0f,
-			1.0f );
-
-		StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
+		HUD_DrawStandardMessage( "FIGHT!", CR_RED, true, 2.0f, 1.0f );
 	}
 	// Display a little thing in the server window so servers can know when matches begin.
 	else
@@ -260,7 +224,7 @@ void DUEL_DoFight( void )
 	GAME_ResetMap( );
 	GAMEMODE_RespawnAllPlayers( BOTEVENT_DUEL_FIGHT );
 
-	SCOREBOARD_RefreshHUD( );
+	HUD_ShouldRefreshBeforeRendering( );
 }
 
 //*****************************************************************************
@@ -281,42 +245,18 @@ void DUEL_DoWinSequence( ULONG ulPlayer )
 
 	if ( NETWORK_GetState( ) != NETSTATE_SERVER )
 	{
-		char				szString[64];
-		DHUDMessageFadeOut	*pMsg;
-
-		sprintf( szString, "%s \\c-WINS!", players[ulPlayer].userinfo.GetName() );
-		V_ColorizeString( szString );
+		FString message;
+		message.Format( "%s WINS!", players[ulPlayer].userinfo.GetName( ));
 
 		// Display "%s WINS!" HUD message.
-		pMsg = new DHUDMessageFadeOut( BigFont, szString,
-			160.4f,
-			75.0f,
-			320,
-			200,
-			CR_RED,
-			3.0f,
-			2.0f );
-
-		StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
+		HUD_DrawStandardMessage( message, CR_RED );
 	}
 
 	// Award a victory or perfect medal to the winner.
-	if ( NETWORK_InClientMode() == false )
-	{
-		LONG	lMedal;
-
-		// If the duel loser doesn't have any frags, give the winner a "Perfect!".
-		if ( players[g_ulDuelLoser].fragcount <= 0 )
-			lMedal = MEDAL_PERFECT;
-		else
-			lMedal = MEDAL_VICTORY;
-
-		// Give the player the medal.
-		MEDAL_GiveMedal( ulPlayer, lMedal );
-		if ( NETWORK_GetState( ) == NETSTATE_SERVER )
-			SERVERCOMMANDS_GivePlayerMedal( ulPlayer, lMedal );
-	}
-
+	// If the duel loser doesn't have any frags, give the winner a "Perfect!".
+	if ( NETWORK_InClientMode( ) == false )
+		MEDAL_GiveMedal( ulPlayer, players[g_ulDuelLoser].fragcount <= 0 ? "Perfect" : "Victory" );
+	
 	for ( ulIdx = 0; ulIdx < MAXPLAYERS; ulIdx++ )
 	{
 		if (( playeringame[ulIdx] ) && ( players[ulIdx].pSkullBot ))
@@ -359,8 +299,6 @@ void DUEL_TimeExpired( void )
 	LONG				lWinner = -1;
 	LONG				lLoser = -1;
 	ULONG				ulIdx;
-	DHUDMessageFadeOut	*pMsg;
-	char				szString[64];
 
 	// Don't end the level if we're not in a duel.
 	if ( DUEL_GetState( ) != DS_INDUEL )
@@ -390,30 +328,8 @@ void DUEL_TimeExpired( void )
 	if (( players[lDueler1].fragcount ) == ( players[lDueler2].fragcount ))
 	{
 		// Only print the message the instant we reach sudden death.
-		if ( level.time == (int)( timelimit * TICRATE * 60 ))
-		{
-			sprintf( szString, "\\cdSUDDEN DEATH!" );
-			V_ColorizeString( szString );
-
-			if ( NETWORK_GetState( ) != NETSTATE_SERVER )
-			{
-				// Display the HUD message.
-				pMsg = new DHUDMessageFadeOut( BigFont, szString,
-					160.4f,
-					75.0f,
-					320,
-					200,
-					CR_RED,
-					3.0f,
-					2.0f );
-
-				StatusBar->AttachMessage( pMsg, MAKE_ID('C','N','T','R') );
-			}
-			else
-			{
-				SERVERCOMMANDS_PrintHUDMessageFadeOut( szString, 160.4f, 75.0f, 320, 200, CR_RED, 3.0f, 2.0f, "BigFont", false, MAKE_ID('C','N','T','R') );
-			}
-		}
+		if ( level.time == static_cast<int>( timelimit * TICRATE * 60 ))
+			HUD_DrawStandardMessage( "SUDDEN DEATH!", CR_GREEN, false, 3.0f, 2.0f, true );
 
 		return;
 	}
@@ -437,6 +353,63 @@ void DUEL_TimeExpired( void )
 	PLAYER_SetWins( &players[lWinner], players[lWinner].ulWins + 1 );
 	NETWORK_Printf( "%s\n", GStrings( "TXT_TIMELIMIT" ));
 	GAME_SetEndLevelDelay( 5 * TICRATE );
+}
+
+//*****************************************************************************
+//
+void DUEL_FragLimitChanged( int iFraglimit )
+{
+	// [RK] Grab the players in game to see who should win.
+	player_t* firstPlayer = NULL;
+	player_t* secondPlayer = NULL;
+
+	for ( int i = 0; i < MAXPLAYERS; ++i )
+	{
+		if ( DUEL_IsDueler(i) )
+		{
+			if (!firstPlayer)
+				firstPlayer = &players[i];
+			else
+			{
+				secondPlayer = &players[i];
+				break;
+			}
+		}
+	}
+
+	// [RK] We only want to do this when there are 2 players in
+	// the game at the moment when the fraglimit is changed.
+	if ( firstPlayer && secondPlayer )
+	{
+		player_t* winner;
+		player_t* loser;
+
+		// [RK] Check if the new fraglimit has been 'hit'.
+		if (( iFraglimit <= D_GetFragCount( firstPlayer )) || ( iFraglimit <= D_GetFragCount( secondPlayer )))
+		{
+			// [RK] Now the player with the higher frag count will be the winner.
+			// If scores are equal, return and let Die() deal with the next frag.
+			if ( D_GetFragCount( firstPlayer ) == D_GetFragCount( secondPlayer ))
+				return;
+			else if ( D_GetFragCount( firstPlayer ) > D_GetFragCount( secondPlayer ))
+			{
+				winner = firstPlayer;
+				loser = secondPlayer;
+			}
+			else
+			{
+				winner = secondPlayer;
+				loser = firstPlayer;
+			}
+			// [RK] This is the same win sequence in Die();
+			NETWORK_Printf( "%s\n", GStrings( "TXT_FRAGLIMIT" ));
+			NETWORK_Printf( "%s wins!\n", winner->userinfo.GetName() );
+			DUEL_SetLoser( loser - players );
+			DUEL_DoWinSequence( winner - players );
+			PLAYER_SetWins( winner, winner->ulWins + 1 );
+			GAME_SetEndLevelDelay( 5 * TICRATE );
+		}
+	}
 }
 
 //*****************************************************************************
@@ -481,6 +454,10 @@ void DUEL_SetState( DUELSTATE_e State )
 {
 	if ( g_DuelState == State )
 		return;
+
+	// [AK] Try clearing the winner's name and score from the scoreboard, but
+	// only after the end of a round.
+	SCOREBOARD_TryClearingWinnerAndScore( true );
 
 	g_DuelState = State;
 
@@ -543,20 +520,14 @@ void DUEL_SetStartNextDuelOnLevelLoad( bool bStart )
 //*****************************************************************************
 //	CONSOLE COMMANDS/VARIABLES
 
-CVAR( Int, sv_duelcountdowntime, 10, CVAR_ARCHIVE );
-CUSTOM_CVAR( Int, duellimit, 0, CVAR_CAMPAIGNLOCK )
+CVAR( Int, sv_duelcountdowntime, 10, CVAR_ARCHIVE | CVAR_GAMEPLAYSETTING );
+CUSTOM_CVAR( Int, duellimit, 0, CVAR_CAMPAIGNLOCK | CVAR_GAMEPLAYSETTING )
 {
 	if ( self >= 256 )
 		self = 255;
 	if ( self < 0 )
 		self = 0;
 
-	if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( gamestate != GS_STARTUP ))
-	{
-		SERVER_Printf( "%s changed to: %d\n", self.GetName( ), (int)self );
-		SERVERCOMMANDS_SetGameModeLimits( );
-
-		// Update the scoreboard.
-		SERVERCONSOLE_UpdateScoreboard( );
-	}
+	// [AK] Update the clients and update the server console.
+	SERVER_SettingChanged( self, true );
 }

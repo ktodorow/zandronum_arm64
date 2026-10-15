@@ -84,13 +84,13 @@ ULONG		TEAM_CountLivingAndRespawnablePlayers( ULONG ulTeamIdx );
 ULONG		TEAM_TeamsWithPlayersOn( void );
 void		TEAM_ExecuteReturnRoutine( ULONG ulTeamIdx, AActor *pReturner );
 ULONG		TEAM_ChooseBestTeamForPlayer( const bool bIgnoreTeamStartsAvailability = false );
-void		TEAM_ScoreSkulltagPoint( player_t *pPlayer, ULONG ulNumPoints, AActor *pPillar );
+void		TEAM_ScoreSkulltagPoint( player_t *player, unsigned int numPoints, AActor *pillar );
+void		TEAM_PrintScoresMessage( unsigned int team, unsigned int scorer, unsigned int numPoints );
 void		TEAM_DisplayNeedToReturnSkullMessage( player_t *pPlayer );
-void		TEAM_FlagDropped( player_t *pPlayer, ULONG ulTeamIdx );
 WORD		TEAM_GetReturnScriptOffset( ULONG ulTeamIdx );
 void		TEAM_DoWinSequence( ULONG ulTeamIdx );
 void		TEAM_TimeExpired( void );
-bool		TEAM_SpawningTemporaryFlag( void );
+bool		TEAM_SpawningTemporaryTeamItem( void );
 
 // Access functions.
 bool		TEAM_CheckIfValid( ULONG ulTeamIdx );
@@ -104,14 +104,15 @@ int			TEAM_GetColor( ULONG ulTeamIdx );
 void		TEAM_SetColor( ULONG ulTeamIdx, int r, int g, int b );
 bool		TEAM_IsCustomPlayerColorAllowed( ULONG ulTeamIdx );
 
+const char	*TEAM_GetTextColorName( ULONG ulTeamIdx );	
 ULONG		TEAM_GetTextColor( ULONG ulTeamIdx );
 void		TEAM_SetTextColor( ULONG ulTeamIdx, USHORT usColor );
 
 LONG		TEAM_GetRailgunColor( ULONG ulTeamIdx );
 void		TEAM_SetRailgunColor( ULONG ulTeamIdx, LONG lColor );
 
-LONG		TEAM_GetScore( ULONG ulTeamIdx );
-void		TEAM_SetScore( ULONG ulTeamIdx, LONG lScore, bool bAnnouncer );
+LONG		TEAM_GetPointCount( ULONG ulTeamIdx );
+void		TEAM_SetPointCount( unsigned int team, int pointCount, bool doAnnouncement, bool showWinSequence = true );
 
 const char	*TEAM_GetSmallHUDIcon( ULONG ulTeamIdx );
 void		TEAM_SetSmallHUDIcon( ULONG ulTeamIdx, const char *pszName, bool bFlag );
@@ -128,6 +129,7 @@ void		TEAM_SetItem( ULONG ulTeamIdx, const PClass *pType, bool bFlag );
 
 AInventory	*TEAM_FindOpposingTeamsItemInPlayersInventory( player_t *pPlayer );
 
+void		TEAM_UpdateCarriers( void );
 player_t	*TEAM_GetCarrier( ULONG ulTeamIdx );
 void		TEAM_SetCarrier( ULONG ulTeamIdx, player_t *player );
 
@@ -152,22 +154,12 @@ void		TEAM_SetSimpleCTFSTMode( bool bSimple );
 bool		TEAM_GetItemTaken( ULONG ulTeamIdx );
 void		TEAM_SetItemTaken( ULONG ulTeamIdx, bool bTaken );
 
-bool		TEAM_GetWhiteFlagTaken( void );
-void		TEAM_SetWhiteFlagTaken( bool bTaken );
-
 POS_t		TEAM_GetItemOrigin( ULONG ulTeamIdx );
 void		TEAM_SetTeamItemOrigin( ULONG ulTeamIdx, POS_t Origin );
-
-POS_t		TEAM_GetWhiteFlagOrigin( void );
-void		TEAM_SetWhiteFlagOrigin( POS_t Origin );
 
 ULONG		TEAM_GetAssistPlayer( ULONG ulTeamIdx );
 void		TEAM_SetAssistPlayer( ULONG ulTeamIdx, ULONG ulPlayer );
 void		TEAM_CancelAssistsOfPlayer( ULONG ulPlayer );
-
-bool		TEAM_CheckAllTeamsHaveEqualFrags( void );
-bool		TEAM_CheckAllTeamsHaveEqualWins( void );
-bool		TEAM_CheckAllTeamsHaveEqualScores( void );
 
 unsigned int	TEAM_GetNumAvailableTeams( void );
 unsigned int	TEAM_GetNumTeamsWithStarts( void );
@@ -175,15 +167,12 @@ bool		TEAM_ShouldUseTeam( ULONG ulTeam );
 
 LONG		TEAM_GetHighestFragCount( void );
 LONG		TEAM_GetHighestWinCount( void );
-LONG		TEAM_GetHighestScoreCount( void );
+LONG		TEAM_GetHighestPointCount( void );
 
 LONG		TEAM_GetSpread ( ULONG ulTeam, LONG (*GetCount) ( ULONG ulTeam ) );
 LONG		TEAM_GetFragCountSpread ( ULONG ulTeam );
 LONG		TEAM_GetWinCountSpread ( ULONG ulTeam );
-LONG		TEAM_GetScoreCountSpread ( ULONG ulTeam );
-
-ULONG		TEAM_CountFlags( void );
-ULONG		TEAM_CountSkulls( void );
+LONG		TEAM_GetPointCountSpread ( ULONG ulTeam );
 
 ULONG		TEAM_GetTeamFromItem( AActor *pActor );
 ULONG		TEAM_GetNextTeam( ULONG ulTeamIdx );
@@ -213,8 +202,6 @@ EXTERN_CVAR( Bool, domination )
 
 EXTERN_CVAR( Int, pointlimit )
 EXTERN_CVAR( Int, sv_flagreturntime )
-
-EXTERN_CVAR( Int, menu_team )
 
 EXTERN_CVAR( Int, sv_maxteams )
 

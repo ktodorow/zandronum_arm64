@@ -349,9 +349,9 @@ bool P_Thing_Projectile (int tid, AActor *source, int type, const char *type_nam
 							double dist = aim.Length();
 							double targspeed = tvel.Length();
 							double ydotx = -aim | tvel;
-							double a = acos (clamp (ydotx / targspeed / dist, (double)-1.0, (double)1.0));
+							double a = acos (clamp (ydotx / targspeed / dist, -1.0, 1.0));
 							double multiplier = double(pr_leadtarget.Random2())*0.1/255+1.1;
-							double sinb = -clamp (targspeed*multiplier * sin(a) / fspeed, (double)-1.0, (double)1.0);
+							double sinb = -clamp (targspeed*multiplier * sin(a) / fspeed, -1.0, 1.0);
 
 							// Use the cross product of two of the triangle's sides to get a
 							// rotation vector.
@@ -407,7 +407,8 @@ nolead:						mobj->angle = R_PointToAngle2 (mobj->x, mobj->y, targ->x, targ->y);
 					bMissileExplode = false;
 					if (mobj->flags & MF_MISSILE)
 					{
-						if (P_CheckMissileSpawn (mobj, spot->radius))
+						// [RK] Client doesn't have the missile yet so we pass false.
+						if (P_CheckMissileSpawn (mobj, spot->radius, true, false))
 						{
 							rtn = true;
 						}
@@ -444,7 +445,7 @@ nolead:						mobj->angle = R_PointToAngle2 (mobj->x, mobj->y, targ->x, targ->y);
 							SERVERCOMMANDS_SetThingFlags( mobj, FLAGSET_FLAGS4 );
 						if ( mobj->flags5 != mobj->GetDefault( )->flags5 )
 							SERVERCOMMANDS_SetThingFlags( mobj, FLAGSET_FLAGS5 );
-						if ( mobj->ulSTFlags != mobj->GetDefault( )->ulSTFlags )
+						if ( mobj->STFlags != mobj->GetDefault( )->STFlags )
 							SERVERCOMMANDS_SetThingFlags( mobj, FLAGSET_FLAGSST );
 						// [BB] If necessary, also adjust gravity.
 						if ( mobj->gravity != mobj->GetDefault( )->gravity )

@@ -51,6 +51,7 @@
 #define __CHAT_H__
 
 #include "c_cvars.h"
+#include "c_dispatch.h"
 #include "d_event.h"
 
 //*****************************************************************************
@@ -59,27 +60,58 @@
 // Maximum size of the chat buffer.
 #define	MAX_CHATBUFFER_LENGTH		128
 
+// [AK] Maximum saved chat messages for each player.
+#define MAX_SAVED_MESSAGES		5
+
 //*****************************************************************************
 typedef enum
 {
 	CHATMODE_NONE,
 	CHATMODE_GLOBAL,
 	CHATMODE_TEAM,
+	CHATMODE_PRIVATE_SEND,			// [AK] We sent a private message.
+	CHATMODE_PRIVATE_RECEIVE,		// [AK] We received a private message.
+	CHATMODE_PRIVATE_RCON_SEND,		// [AK] We have RCON access and received a private message sent by the server.
+	CHATMODE_PRIVATE_RCON_RECEIVE,	// [AK] We have RCON access and received a private message sent to the server.
 
 	NUM_CHATMODES
 
 } CHATMODE_e;
 
 //*****************************************************************************
+typedef enum
+{
+	PRIVATECHAT_OFF,
+	PRIVATECHAT_EVERYONE,
+	PRIVATECHAT_TEAMMATESONLY,
+
+} PRIVATECHAT_e;
+
+//*****************************************************************************
 //	PROTOTYPES
 
-void	CHAT_Construct( void );
-void	CHAT_Tick( void );
-bool	CHAT_Input( event_t *pEvent );
-void	CHAT_Render( void );
+void		CHAT_Construct( void );
+void		CHAT_Destruct( void );
+void		CHAT_Tick( void );
+bool		CHAT_Input( event_t *pEvent );
+void		CHAT_Render( void );
 
-ULONG	CHAT_GetChatMode( void );
-void	CHAT_PrintChatString( ULONG ulPlayer, ULONG ulMode, const char *pszString );
+void		CHAT_SetChatMode( ULONG ulMode );
+ULONG		CHAT_GetChatMode( void );
+const char	*CHAT_GetChatMessage( ULONG ulPlayer, ULONG ulOffset ); // [AK]
+void		CHAT_AddChatMessage( ULONG ulPlayer, const char *pszString ); // [AK]
+void		CHAT_ClearChatMessages( ULONG ulPlayer ); // [AK]
+void		CHAT_SerializeMessages( FArchive &arc ); // [AK]
+bool		CHAT_CleanChatString( FString &ChatString );
+void		CHAT_PrintChatString( ULONG ulPlayer, ULONG ulMode, const char *pszString );
+bool		CHAT_CanPrivateChatToTeammatesOnly( void );
+bool		CHAT_CanSendPrivateMessageTo( ULONG ulSender, ULONG ulReceiver );
+bool		CHAT_CanUseTeamChat( unsigned int player, bool printMessage );
+void		CHAT_IgnorePlayer( const unsigned int player, const bool ignoreVoice, const unsigned int ticks, const char *reason );
+void		CHAT_ExecuteIgnoreCmd( FCommandLine &argv, const bool isIndexCmd, const bool isVoiceCmd );
+void		CHAT_UnignorePlayer( const unsigned int player, const bool unignoreVoice );
+void		CHAT_ExecuteUnignoreCmd( FCommandLine &argv, const bool isIndexCmd, const bool isVoiceCmd );
+void		CHAT_PrintMutedMessage( const bool doVoice );
 
 //*****************************************************************************
 //  EXTERNAL CONSOLE VARIABLES

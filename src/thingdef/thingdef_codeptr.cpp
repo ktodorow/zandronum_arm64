@@ -109,8 +109,8 @@ bool NETWORK_ShouldActorNotBeSpawned ( const AActor *pSpawner, const PClass *pSp
 		return true;
 
 	bool bSpawnOnClient = ( bForceClientSide
-	                        || ( pSpawner && ( pSpawner->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) )
-	                        || ( GetDefaultByType(pSpawnType)->ulNetworkFlags & NETFL_CLIENTSIDEONLY )
+	                        || ( pSpawner && ( pSpawner->NetworkFlags & NETFL_CLIENTSIDEONLY ) )
+	                        || ( GetDefaultByType(pSpawnType)->NetworkFlags & NETFL_CLIENTSIDEONLY )
 	                      );
 
 	// [BB] Clients don't spawn non-client side only things.
@@ -159,6 +159,13 @@ bool ACustomInventory::CallStateChain (AActor *actor, FState * State)
 			// Abort immediately if the state jumps to itself!
 			if (State == State->GetNextState()) 
 			{
+				// [AK] The server handles state chain results, so if the client
+				// reaches here, then it already succeeded on the server's end.
+				// Thus, let it succeed on the client's end, even in this case,
+				// because they likely didn't predict the result properly.
+				if (NETWORK_InClientMode())
+					return true;
+
 				return false;
 			}
 			
@@ -176,7 +183,7 @@ bool ACustomInventory::CallStateChain (AActor *actor, FState * State)
 	// immune to state chain failure in event it cannot predict the result properly. Since the client is here, it has
 	// already succeded on the server. Without this, clients would sometimes be unable to handle e.g. GiveInventory
 	// messages properly for CustomInventory items with Pickup states that call ACS.
-	if ( NETWORK_InClientMode() )
+	if (NETWORK_InClientMode())
 		return true;
 
 	return result;
@@ -357,7 +364,7 @@ static void DoAttack (AActor *self, bool domelee, bool domissile,
 	// [BC] Let the server play these sounds.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -385,7 +392,7 @@ static void DoAttack (AActor *self, bool domelee, bool domissile,
 			{
 				missile->tracer=self->target;
 			}
-			bool bSucces = P_CheckMissileSpawn(missile, self->radius);
+			bool bSucces = P_CheckMissileSpawn(missile, self->radius, true, false);
 
 			// [BC] If we're the server, tell clients to spawn the missile.
 			if ( bSucces && ( NETWORK_GetState( ) == NETSTATE_SERVER ) )
@@ -447,24 +454,42 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_PlaySound)
 	// [BC] Let the server play these sounds.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
 	if (!looping)
 	{
+		// [AK] If we're the server, we have to update the list of looping sound channels.
+		if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+		{
+			// [AK] Don't loop this sound if it's already looping on this channel.
+			if (( channel & CHAN_LOOP ) && ( SERVER_IsChannelLooping( self, channel&7, soundid ) ))
+				return;
+
+			SERVER_UpdateLoopingChannels( self, channel, soundid, volume, attenuation, ( channel & CHAN_LOOP ) == false );
+		}
+
 		S_Sound (self, channel, soundid, volume, attenuation, true );	// [BC] Inform the clients.
 	}
 	else
 	{
 		if (!S_IsActorPlayingSomething (self, channel&7, soundid))
 		{
+			// [AK] Don't play the sound if it's already looping on this channel on the server.
+			if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( SERVER_IsChannelLooping( self, channel&7, soundid ) ))
+				return;
+
 			S_Sound (self, channel | CHAN_LOOP, soundid, volume, attenuation);
 
 			// [BC] If we're the server, tell clients to play the sound.
 			// [Dusk] We need to respect existing sound play since this is a looped sound.
+			// [AK] Add this channel to the list of looping channels.
 			if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+			{
 				SERVERCOMMANDS_SoundActor( self, channel | CHAN_LOOP, S_GetName( soundid ), volume, attenuation, MAXPLAYERS, 0, true );
+				SERVER_UpdateLoopingChannels( self, channel, soundid, volume, attenuation, false );
+			}
 		}
 	}
 }
@@ -474,7 +499,21 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_StopSound)
 	ACTION_PARAM_START(1);
 	ACTION_PARAM_INT(slot, 0);
 
+	// [AK] We need to handle this differently if the calling actor is a CustomInventory item
+	// being picked up. Let the server tell the clients to stop the sound.
+	if (( stateowner != NULL ) && ( stateowner != self ) && ( stateowner->IsKindOf( RUNTIME_CLASS( ACustomInventory ))))
+	{
+		if (( NETWORK_InClientMode( )) && (( stateowner->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false ))
+			return;
+		else if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+			SERVERCOMMANDS_StopSound( self, slot );
+	}
+
 	S_StopSound(self, slot);
+
+	// [AK] If we're the server, remove this channel from the list of looping channels.
+	if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+		SERVER_UpdateLoopingChannels( self, slot, 0, 0, 0, true );
 }
 
 //==========================================================================
@@ -505,7 +544,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_PlaySoundEx)
 	// [BB] Let the server play these sounds.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -526,17 +565,35 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_PlaySoundEx)
 
 	if (!looping)
 	{
+		// [AK] If we're the server, we have to update the list of looping sound channels.
+		if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+		{
+			// [AK] Don't loop this sound if it's already looping on this channel.
+			if (( channel & CHAN_LOOP ) && ( SERVER_IsChannelLooping( self, ( int(channel) - NAME_Auto ) & 7, soundid ) ))
+				return;
+
+			SERVER_UpdateLoopingChannels( self, channel, soundid, 1, attenuation, ( channel & CHAN_LOOP ) == false );
+		}
+
 		S_Sound (self, int(channel) - NAME_Auto, soundid, 1, attenuation, true );	// [BB] Inform the clients.
 	}
 	else
 	{
 		if (!S_IsActorPlayingSomething (self, int(channel) - NAME_Auto, soundid))
 		{
+			// [AK] If we're the server, check if this sound isn't already looping on the same channel.
+			if (( NETWORK_GetState( ) == NETSTATE_SERVER ) && ( SERVER_IsChannelLooping( self, ( int(channel) - NAME_Auto ) & 7, soundid ) ) )
+				return;
+
 			S_Sound (self, (int(channel) - NAME_Auto) | CHAN_LOOP, soundid, 1, attenuation);
 
 			// [BB] If we're the server, tell clients to play the sound, but only if they are not already playing something for this actor.
+			// [AK] Add this channel to the list of looping channels.
 			if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+			{
 				SERVERCOMMANDS_SoundActor( self, (int(channel) - NAME_Auto) | CHAN_LOOP, S_GetName( soundid ), 1, attenuation, MAXPLAYERS, 0, true );
+				SERVER_UpdateLoopingChannels( self, int(channel) - NAME_Auto, soundid, 1, attenuation, false );
+			}
 		}
 	}
 }
@@ -548,7 +605,21 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_StopSoundEx)
 
 	if (channel > NAME_Auto && channel <= NAME_SoundSlot7)
 	{
+		// [AK] We need to handle this differently if the calling actor is a CustomInventory item
+		// being picked up. Let the server tell the clients to stop the sound.
+		if (( stateowner != NULL ) && ( stateowner != self ) && ( stateowner->IsKindOf( RUNTIME_CLASS( ACustomInventory ))))
+		{
+			if (( NETWORK_InClientMode( )) && (( stateowner->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false ))
+				return;
+			else if ( NETWORK_GetState( ) == NETSTATE_SERVER )
+				SERVERCOMMANDS_StopSound( self, int(channel) - NAME_Auto );
+		}
+
 		S_StopSound (self, int(channel) - NAME_Auto);
+
+		// [AK] If we're the server, remove this channel from the list of looping channels.
+		if ( NETWORK_GetState() == NETSTATE_SERVER )
+			SERVER_UpdateLoopingChannels( self, int(channel) - NAME_Auto, 0, 0, 0, true );
 	}
 }
 
@@ -700,7 +771,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Jump)
 	// [BC] Don't jump here in client mode.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -727,7 +798,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_JumpIfHealthLower)
 	// [BC] Don't jump here in client mode.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -808,7 +879,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_JumpIfCloser)
 	// [BC] Don't jump here in client mode.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -857,7 +928,7 @@ void DoJumpIfInventory(AActor * owner, DECLARE_PARAMINFO)
 	{
 		if ( NETWORK_InClientMode() )
 		{
-			if ((( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) &&
+			if ((( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) &&
 				(( self->player == NULL ) || (( self->player - players ) != consoleplayer )))
 			{
 				return;
@@ -1055,7 +1126,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_CallSpecial)
 	// [BC] Don't do this in client mode.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 		{
 			ACTION_SET_RESULT( false );
 			return;
@@ -1217,7 +1288,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_CustomMissile)
 				// [BB] The client did the spawning, so this has to be a client side only actor.
 				// Needs to be done regardless of whether the spawn was successful.
 				if ( NETWORK_InClientMode() )
-					missile->ulNetworkFlags |= NETFL_CLIENTSIDEONLY;
+					missile->NetworkFlags |= NETFL_CLIENTSIDEONLY;
 				// [BC] If we're the server, tell clients to spawn the missile.
 				else if ( NETWORK_GetState( ) == NETSTATE_SERVER )
 					SERVERCOMMANDS_SpawnMissile( missile );
@@ -1316,7 +1387,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_CustomMeleeAttack)
 	ACTION_PARAM_BOOL(bleed, 4);
 
 	// [BB] This is handled by the server.
-	if ( NETWORK_InClientMode() && ( ( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) )
+	if ( NETWORK_InClientMode() && ( ( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) )
 		return;
 
 	if (DamageType==NAME_None) DamageType = NAME_Melee;	// Melee is the default type
@@ -1384,7 +1455,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_CustomComboAttack)
 			{
 				missile->tracer=self->target;
 			}
-			bool bSucces = P_CheckMissileSpawn(missile, self->radius);
+			bool bSucces = P_CheckMissileSpawn(missile, self->radius, true, false);
 
 			// [BB] If we're the server, tell clients to spawn this missile.
 			if ( bSucces && ( NETWORK_GetState( ) == NETSTATE_SERVER ) )
@@ -1572,10 +1643,7 @@ void A_CustomFireBullets( AActor *self,
 	}
 
 	// [BB] If the player hit a player with his attack, potentially give him a medal.
-	if ( player->bStruckPlayer )
-		PLAYER_StruckPlayer( player );
-	else
-		player->ulConsecutiveHits = 0;
+	PLAYER_CheckStruckPlayer( self );
 
 	// [BB] Tell all the bots that a weapon was fired.
 	// This is more or less a hack, so that the bots are notified when the
@@ -1787,7 +1855,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_CustomPunch)
 	// [BC] Weapons are handled by the server.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -1806,9 +1874,9 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_CustomPunch)
 		{
 			// [BB] If we're the server, tell the client that he lost ammo.
 			if ( weapon->Ammo1 )
-				SERVERCOMMANDS_GiveInventory( weapon->Owner->player - players, weapon->Ammo1 );
+				SERVERCOMMANDS_TakeInventory( weapon->Owner->player - players, weapon->AmmoType1, weapon->Ammo1->Amount );
 			if ( weapon->Ammo2 )
-				SERVERCOMMANDS_GiveInventory( weapon->Owner->player - players, weapon->Ammo2 );
+				SERVERCOMMANDS_TakeInventory( weapon->Owner->player - players, weapon->AmmoType2, weapon->Ammo2->Amount );
 		}
 	}
 
@@ -1893,7 +1961,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_RailAttack)
 	if ( NETWORK_InClientMode()
 		&& !UNLAGGED_DrawRailClientside( self ) )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -2121,6 +2189,56 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_GiveToTarget)
 	DoGiveInventory(self->target, PUSH_PARAMINFO);
 }	
 
+DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_GiveToChildren)
+{
+	TThinkerIterator<AActor> it;
+	AActor * mo;
+
+	while ((mo = it.Next()))
+	{
+		if (mo->master == self) DoGiveInventory(mo, PUSH_PARAMINFO);
+	}
+}
+
+DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_GiveToSiblings)
+{
+	TThinkerIterator<AActor> it;
+	AActor * mo;
+
+	if (self->master != NULL)
+	{
+		while ((mo = it.Next()))
+		{
+			if (mo->master == self->master && mo != self) DoGiveInventory(mo, PUSH_PARAMINFO);
+		}
+	}
+}
+
+//===========================================================================
+//
+// [AK] A_GivePlayerMedal
+//
+//===========================================================================
+
+DEFINE_ACTION_FUNCTION_PARAMS( AActor, A_GivePlayerMedal )
+{
+	ACTION_PARAM_START( 3 );
+	ACTION_PARAM_NAME( medal, 0 );
+	ACTION_PARAM_BOOL( silent, 1 );
+	ACTION_PARAM_INT( receiver, 2 );
+
+	bool result = false;
+
+	// [AK] Use one of the actor's pointers to determine who gets the medal.
+	COPY_AAPTR_NOT_NULL( self, self, receiver );
+
+	// [AK] Don't let the clients give medals to players.
+	if (( NETWORK_InClientMode( ) == false ) && ( self->player != nullptr ))
+		result = MEDAL_GiveMedal( self->player - players, medal, silent );
+
+	ACTION_SET_RESULT( result );
+}
+
 //===========================================================================
 //
 // A_TakeInventory
@@ -2218,6 +2336,31 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_TakeFromTarget)
 {
 	DoTakeInventory(self->target, PUSH_PARAMINFO);
 }	
+
+DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_TakeFromChildren)
+{
+	TThinkerIterator<AActor> it;
+	AActor * mo;
+
+	while ((mo = it.Next()))
+	{
+		if (mo->master == self) DoTakeInventory(mo, PUSH_PARAMINFO);
+	}
+}
+
+DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_TakeFromSiblings)
+{
+	TThinkerIterator<AActor> it;
+	AActor * mo;
+
+	if (self->master != NULL)
+	{
+		while ((mo = it.Next()))
+		{
+			if (mo->master == self->master && mo != self) DoTakeInventory(mo, PUSH_PARAMINFO);
+		}
+	}
+}
 
 //===========================================================================
 //
@@ -2433,7 +2576,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SpawnItem)
 		}
 		// [BB] The client did the spawning, so this has to be a client side only actor.
 		else if ( NETWORK_InClientMode() )
-			mo->ulNetworkFlags |= NETFL_CLIENTSIDEONLY;
+			mo->NetworkFlags |= NETFL_CLIENTSIDEONLY;
 	}
 	ACTION_SET_RESULT(res);	// for an inventory item's use state
 }
@@ -2541,8 +2684,9 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SpawnItemEx)
 			if ( mo->Translation )
 				SERVERCOMMANDS_SetThingTranslation( mo );
 
+			// [TRSR] It is useful to always sync the AAPTR_TARGET field for missiles.
 			// [BB] To properly handle actor-actor bouncing, the client must know the target.
-			if ( mo->BounceFlags != BOUNCE_None )
+			if ( mo->flags & MF_MISSILE || mo->BounceFlags != BOUNCE_None )
 				SERVERCOMMANDS_SetThingTarget ( mo );
 
 			// [BB] Set scale if necessary.
@@ -2552,7 +2696,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SpawnItemEx)
 		// [BC] Flag this actor as being client-spawned.
 		if ( NETWORK_InClientMode() )
 		{
-			mo->ulNetworkFlags |= NETFL_CLIENTSIDEONLY;
+			mo->NetworkFlags |= NETFL_CLIENTSIDEONLY;
 		}
 	}
 }
@@ -2587,7 +2731,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_ThrowGrenade)
 	// [BC] Weapons are handled by the server.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -2651,7 +2795,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Recoil)
 	// Note: I'm not sure whether this should be server side also for players.
 	if ( NETWORK_InClientMode() )
 	{
-		if ( (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) && ( self->player == NULL ) )
+		if ( (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) && ( self->player == NULL ) )
 			return;
 	}
 
@@ -2743,7 +2887,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Print)
 			// SERVERCOMMANDS_PrintHUDMessage and fill it with the default arguments of used
 			// in C_MidPrint.
 			if ( player >= 0 )
-				SERVERCOMMANDS_PrintHUDMessage( text, 1.5f, 0.375f, 0, 0, CR_GOLD, con_midtime, (fontname != NAME_None) ? fontname.GetChars() : SERVER_GetCurrentFont( ), true, MAKE_ID('C','N','T','R'), ULONG(player), SVCF_ONLYTHISCLIENT );
+				SERVERCOMMANDS_PrintHUDMessage( text, 1.5f, 0.375f, 0, 0, HUDMESSAGETYPE_NORMAL | HUDMESSAGE_NET_LOG, CR_GOLD, con_midtime, 0.0f, 0.0f, (fontname != NAME_None) ? fontname.GetChars() : "SmallFont", MAKE_ID('C', 'N', 'T', 'R'), ULONG(player), SVCF_ONLYTHISCLIENT );
 		}
 
 		con_midtime = saved;
@@ -3095,7 +3239,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SpawnDebris)
 			if ( NETWORK_GetState( ) == NETSTATE_SERVER )
 				SERVERCOMMANDS_SpawnThing( mo );
 			else if ( NETWORK_InClientMode() )
-				mo->ulNetworkFlags |= NETFL_CLIENTSIDEONLY;
+				mo->NetworkFlags |= NETFL_CLIENTSIDEONLY;
 
 			if (transfer_translation)
 			{
@@ -3142,7 +3286,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_CheckSight)
 	// [Dusk] If the actor does NOT have CLIENTSIDEONLY, the client does nothing.
 	if ( NETWORK_InClientMode() )
 	{
-		if ( !( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) ||
+		if ( !( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) ||
 			P_CheckSight( players[consoleplayer].camera, self, SF_IGNOREVISIBILITY ) )
 		{
 			return;
@@ -3324,7 +3468,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_DropInventory)
 	// [BC] This is handled server-side.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -3377,7 +3521,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_JumpIf)
 	// [BC] Don't jump here in client mode.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -3439,7 +3583,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_KillSiblings)
 	// [BB] This is handled server-side.
 	if ( NETWORK_InClientMode() )
 	{
-		if (( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
+		if (( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false )
 			return;
 	}
 
@@ -3696,7 +3840,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Respawn)
 			SERVERCOMMANDS_SpawnThing( self );
 			SERVERCOMMANDS_SetThingAngle( self );
 			// [BB] Since the clients just spawned this actor again, be sure to remove this flag.
-			self ->ulNetworkFlags &= ~NETFL_DESTROYED_ON_CLIENT;
+			self ->NetworkFlags &= ~NETFL_DESTROYED_ON_CLIENT;
 		}
 
 		if (flags & RSF_FOG)
@@ -4523,7 +4667,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_ChangeFlag)
 					flagset = FLAGSET_FLAGS6;
 				else if ( flagp == &self->flags7 )
 					flagset = FLAGSET_FLAGS7;
-				else if ( flagp == &self->ulSTFlags )
+				else if ( flagp == &self->STFlags )
 					flagset = FLAGSET_FLAGSST;
 
 				SERVERCOMMANDS_SetThingFlags( self, flagset );
@@ -4544,6 +4688,9 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_ChangeFlag)
 			{ // It no longer counts as a kill.
 				level.total_monsters--;
 			}
+
+			// [AK] Update the invasion monster count accordingly.
+			INVASION_UpdateMonsterCount( self, !kill_after );
 
 			// [BB] If we're the server, tell clients the new number of total monsters.
 			if ( NETWORK_GetState( ) == NETSTATE_SERVER )
@@ -4760,7 +4907,7 @@ DEFINE_ACTION_FUNCTION_PARAMS (AActor, A_FaceConsolePlayer) {
 	Angle = R_PointToAngle2( self->x, self->y, pConsolePlayer->x, pConsolePlayer->y );
 	DeltaAngle = Angle - self->angle;
 
-	if (( MaxTurnAngle == 0 ) || ( DeltaAngle < MaxTurnAngle ) || ( DeltaAngle > (unsigned)-MaxTurnAngle ))
+	if (( MaxTurnAngle == 0 ) || ( DeltaAngle < MaxTurnAngle ) || ( DeltaAngle > ( ANGLE_MAX - MaxTurnAngle + 1 )))
 		self->angle = Angle;
 	else if ( DeltaAngle < ANG180 )
 		self->angle += MaxTurnAngle;
@@ -5074,7 +5221,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Teleport)
 	ACTION_PARAM_FIXED(MaxDist, 5);
 
 	// [BB] This is handled by the server.
-	if ( NETWORK_InClientMode() && ( ( self->ulNetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) )
+	if ( NETWORK_InClientMode() && ( ( self->NetworkFlags & NETFL_CLIENTSIDEONLY ) == false ) )
 		return;
 
 	// Randomly choose not to teleport like A_Srcr2Decide.
@@ -5421,7 +5568,7 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_Warp)
 		return;
 
 	AActor *reference = COPY_AAPTR(self, destination_selector);
-	const MoveThingData oldPositionData ( self ); // [TP]
+	const MOVE_THING_DATA_s oldPositionData ( self ); // [TP]
 
 	if (!reference)
 	{
@@ -5690,17 +5837,19 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, ACS_NamedTerminate)
 //==========================================================================
 enum RadiusGiveFlags
 {
-	RGF_GIVESELF	=   1,
-	RGF_PLAYERS		=   2,
-	RGF_MONSTERS	=   4,
-	RGF_OBJECTS		=   8,
-	RGF_VOODOO		=  16,
-	RGF_CORPSES		=  32,
-	RGF_MASK		=  63,
-	RGF_NOTARGET	=  64,
-	RGF_NOTRACER	= 128,
-	RGF_NOMASTER	= 256,
-	RGF_CUBE		= 512,
+	RGF_GIVESELF	=   1 << 0,
+	RGF_PLAYERS		=   1 << 1,
+	RGF_MONSTERS	=   1 << 2,
+	RGF_OBJECTS		=   1 << 3,
+	RGF_VOODOO		=	1 << 4,
+	RGF_CORPSES		=	1 << 5,
+	RGF_MASK		=	2111,
+	RGF_NOTARGET	=	1 << 6,
+	RGF_NOTRACER	=	1 << 7,
+	RGF_NOMASTER	=	1 << 8,
+	RGF_CUBE		=	1 << 9,
+	RGF_NOSIGHT		=	1 << 10,
+	RGF_MISSILES	=	1 << 11,
 };
 
 DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_RadiusGive)
@@ -5727,8 +5876,10 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_RadiusGive)
 	FBlockThingsIterator it(FBoundingBox(self->x, self->y, distance));
 	double distsquared = double(distance) * double(distance);
 
+	TThinkerIterator<AActor> it_missiles; // [JM] Iterator for missiles. (Temporary, until Zandronum catches up with later ZDoom revisions.)
+
 	AActor *thing;
-	while ((thing = it.Next()))
+	while ((thing = (flags & RGF_MISSILES) ? it_missiles.Next() : it.Next())) // [JM] Use TThinkerIterator for RGF_MISSILES, like later ZDoom revisions.
 	{
 		// Don't give to inventory items
 		if (thing->flags & MF_SPECIAL)
@@ -5760,7 +5911,8 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_RadiusGive)
 			continue;
 		}
 		// Players, monsters, and other shootable objects
-		if (thing->player)
+		// [AK] Don't give items to spectators.
+		if ((thing->player) && (thing->player->bSpectating == false))
 		{
 			if ((thing->player->mo == thing) && !(flags & RGF_PLAYERS))
 			{
@@ -5781,6 +5933,13 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_RadiusGive)
 		else if (thing->flags & MF_SHOOTABLE || thing->flags6 & MF6_VULNERABLE)
 		{
 			if (!(flags & RGF_OBJECTS))
+			{
+				continue;
+			}
+		}
+		else if (thing->flags & MF_MISSILE)
+		{
+			if (!(flags & RGF_MISSILES))
 			{
 				continue;
 			}
@@ -5810,8 +5969,8 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_RadiusGive)
 		}
 		fixed_t dz = abs ((thing->z + thing->height/2) - (self->z + self->height/2));
 
-		if (P_CheckSight (thing, self, SF_IGNOREVISIBILITY|SF_IGNOREWATERBOUNDARY))
-		{ // OK to give; target is in direct path
+		if ((flags & RGF_NOSIGHT) || P_CheckSight (thing, self, SF_IGNOREVISIBILITY|SF_IGNOREWATERBOUNDARY))
+		{ // OK to give; target is in direct path, or the monster doesn't care about it being in line of sight.
 			AInventory *gift = static_cast<AInventory *>(Spawn (item, 0, 0, 0, NO_REPLACE));
 			if (gift->IsKindOf(RUNTIME_CLASS(AHealth)))
 			{
@@ -5846,7 +6005,8 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_SetTics)
 	ACTION_PARAM_START(1);
 	ACTION_PARAM_INT(tics_to_set, 0);
 
-	if (stateowner != self && self->player != NULL && stateowner->IsKindOf(RUNTIME_CLASS(AWeapon)))
+	// [AK] Added a sanity check to make sure stateowner isn't NULL.
+	if (stateowner != NULL && stateowner != self && self->player != NULL && stateowner->IsKindOf(RUNTIME_CLASS(AWeapon)))
 	{ // Is this a weapon? Need to check psp states for a match, then. Blah.
 		for (int i = 0; i < NUMPSPRITES; ++i)
 		{
@@ -5889,4 +6049,28 @@ DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_DropItem)
 	ACTION_PARAM_INT(chance, 2);
 
 	P_DropItem(self, spawntype, amount, chance);
+}
+
+//==========================================================================
+//
+// [JM] A_ClientsideACSExecute
+//
+//==========================================================================
+
+DEFINE_ACTION_FUNCTION_PARAMS(AActor, A_ClientsideACSExecute)
+{
+	ACTION_PARAM_START(5);
+
+	ACTION_PARAM_NAME(scriptname, 0);
+	ACTION_PARAM_INT(arg1, 1);
+	ACTION_PARAM_INT(arg2, 2);
+	ACTION_PARAM_INT(arg3, 3);
+	ACTION_PARAM_INT(arg4, 4);
+
+	if (NETWORK_GetState() > NETSTATE_CLIENT || !ACS_IsScriptClientSide(-scriptname))
+		return;
+
+	bool res = !!P_ExecuteSpecial(ACS_ExecuteWithResult, NULL, self, false, -scriptname, arg1, arg2, arg3, arg4);
+
+	ACTION_SET_RESULT(res);
 }
