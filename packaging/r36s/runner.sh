@@ -112,15 +112,27 @@ echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH EGL=$SDL_VIDEO_EGL_DRIVER"
 python3 check-runtime.py || exit 1
 [[ -f config/zandronum.ini ]] || cp defaults.ini config/zandronum.ini
 
-# Only menu keys for #3; native joystick disabled to avoid duplicate input.
-# Full gameplay controls and persistence are qualified in #4.
+# Migrate #3 menu-only configuration once; retain owner changes on relaunch.
+# Marker is archived by engine with bindings, so failed initialization retries.
+profile_args=()
+if ! grep -qx 'r36s_controls_profile=1' config/zandronum.ini; then
+    if [[ ! -e config/zandronum.before-controls-v1.ini ]]; then
+        cp config/zandronum.ini config/zandronum.before-controls-v1.ini || exit 1
+    fi
+    profile_args=(-exec "$gamedir/controls.cfg")
+    echo 'Installing controls profile 1; original configuration backed up.'
+else
+    echo 'Keeping saved controls/settings (profile 1 already installed).'
+fi
+echo "Configuration=$gamedir/config/zandronum.ini Saves=$gamedir/saves"
+# Helper supplies keyboard/mouse input; native joystick stays disabled.
 pm_platform_helper
 # Installed helper uses pkill -f; match only client's explicit argv[0].
-"$controlfolder/gptokeyb" -k '^\./zandronum( |$)' -hotkey back -c "$gamedir/menu.gptk" &
+"$controlfolder/gptokeyb" -k '^\./zandronum( |$)' -hotkey back -c "$gamedir/gameplay.gptk" &
 helper_pid=$!
 ./zandronum -iwad "$iwad" -config "$gamedir/config/zandronum.ini" \
     -savedir "$gamedir/saves" -width 640 -height 480 \
-    +vid_renderer "$renderer_id" +fullscreen 1 +use_joystick 0 "$@" &
+    "${profile_args[@]}" +vid_renderer "$renderer_id" +fullscreen 1 +use_joystick 0 "$@" &
 game_pid=$!
 sleep 2
 if kill -0 "$game_pid" 2>/dev/null; then

@@ -120,6 +120,9 @@ complete this gate. Full controller mapping and renderer qualification follow.
 | [#7](https://github.com/ktodorow/zandronum_arm64/issues/7) | Native 640×480, sustained at least 30 FPS in representative original maps and a heavier combat scene with effects/music active; aim for 60 FPS and record dips. |
 | [#8](https://github.com/ktodorow/zandronum_arm64/issues/8) | Rebuild, install and accept the independently usable personal single-player package, including repeated launch/exit and persistence. |
 
+Issue #4 [controller/persistence scenario](r36s-single-player.md) covers
+save-name grid, actual data paths, relaunch and normal map transitions.
+
 For each result, record date, build/resource/content identities, firmware and
 PortMaster versions, renderer/settings, map/scene and repeatable duration,
 observed behavior, relevant logs and pass/fail. Performance records include

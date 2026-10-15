@@ -1,12 +1,14 @@
 # Personal R36S PortMaster package
 
-Issue [#3](https://github.com/ktodorow/zandronum_arm64/issues/3), branch `r36s`,
-derived from ARM master, including timer fix `a21bcb037`. Scope: first native-resolution launch,
-basic menu/exit keys and frontend recovery. Acceptance follows
+Issues [#3](https://github.com/ktodorow/zandronum_arm64/issues/3) and
+[#4](https://github.com/ktodorow/zandronum_arm64/issues/4), branch `r36s`,
+derived from ARM master, including timer fix `a21bcb037`. Scope: native-resolution
+launch, gameplay/menu controls, persistence and frontend recovery. Acceptance follows
 [main specification](specs/zandronum-3.2.1-arm64-r36s.md) and
 [device test workflow](portmaster-testing.md). Owner confirmed visible
 menu/game, Ports-menu launch and working SELECT+START exit on updated build.
 Hardware replay also confirms normal exit and frontend restoration.
+Gameplay profile and persistence scenario: [single-player guide](r36s-single-player.md).
 
 ## Build and stage
 
@@ -81,14 +83,20 @@ discovery; invalid override exercises missing-data error without moving
 owner files. Supply your own IWAD. Missing data opens installed PortMaster
 error dialog, logs required locations, then restores frontend.
 
-Basic controls use installed PortMaster controller database and GPTOKEYB:
-D-pad navigates, A selects, B backs out, START opens menu. Owner requested
+Controls use installed PortMaster controller database and GPTOKEYB:
+D-pad navigates, A selects, B backs out, START opens menu. Gameplay profile
+adds left-stick movement, right-stick aim, R2 fire, A use and L1/R1 weapons;
+[full mapping and save-name grid](r36s-single-player.md#input-profile).
+Owner requested
 SELECT+START for exit. Installed GPTOKEYB runs with explicit kill mode and
 `-hotkey back`; target regex `^\./zandronum( |$)` matches only client argv,
 preserving runner and SSH commands containing package name. Original
 SELECT/X sequence failed during Ports retest.
 Native engine joystick is disabled to prevent duplicate input.
-Full gameplay mapping and persistence qualification belong to #4.
+First launch migrates #3 menu-only bindings once, backing up live INI;
+subsequent launches preserve changed settings and bindings. See
+[upgrade and paths](r36s-single-player.md#configuration-upgrade-and-paths)
+and [current #4 evidence](r36s-single-player.md#evidence-2026-10-15).
 
 ## Display and lifecycle
 
