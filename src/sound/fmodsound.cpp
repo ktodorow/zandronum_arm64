@@ -54,7 +54,7 @@ extern HWND Window;
 #endif
 
 #include "templates.h"
-#ifndef NO_SOUND
+#if !defined(NO_SOUND) && !defined(NO_FMOD)
 #include "fmodsound.h"
 #endif
 #include "c_cvars.h"
@@ -98,7 +98,7 @@ struct FEnumList
 
 // EXTERNAL FUNCTION PROTOTYPES --------------------------------------------
 
-#ifndef NO_SOUND
+#if !defined(NO_SOUND) && !defined(NO_FMOD)
 // PUBLIC FUNCTION PROTOTYPES ----------------------------------------------
 
 // PRIVATE FUNCTION PROTOTYPES ---------------------------------------------
@@ -147,7 +147,7 @@ CUSTOM_CVAR (Float, snd_waterlp, 250, CVAR_ARCHIVE|CVAR_GLOBALCONFIG)
 	}
 }
 
-#ifndef NO_SOUND
+#if !defined(NO_SOUND) && !defined(NO_FMOD)
 
 // PRIVATE DATA DEFINITIONS ------------------------------------------------
 

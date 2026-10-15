@@ -150,6 +150,10 @@ public:
 	virtual short *DecodeSample(int outlen, const void *coded, int sizebytes, ECodecType type);
 
 	virtual void DrawWaveDebug(int mode);
+#ifdef NO_FMOD
+protected:
+	virtual SoundDecoder *CreateDecoder(FileReader *reader);
+#endif
 };
 
 extern SoundRenderer *GSnd;

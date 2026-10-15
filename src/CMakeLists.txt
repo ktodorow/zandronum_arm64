@@ -15,12 +15,17 @@ include( CheckLibraryExists )
 # [TP] For the code generator
 find_package( PythonInterp 3 REQUIRED )
 
-if( NOT APPLE )
+if( NOT APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(i.86|x86|X86|x86_64|AMD64|amd64)$" )
 	option( NO_ASM "Disable assembly code" OFF )
-else( NOT APPLE )
-	# At the moment asm code doesn't work with OS X, so disable by default
+else()
+	# Bundled assembly implements x86 only.
 	option( NO_ASM "Disable assembly code" ON )
-endif( NOT APPLE )
+endif()
+
+option( USE_OPENAL "Use OpenAL and portable decoders instead of FMOD Ex" OFF )
+if( USE_OPENAL )
+	add_definitions( -DNO_FMOD=1 )
+endif()
 if( "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" )
 	option( NO_STRIP "Do not strip Release or MinSizeRel builds" )
 	# At least some versions of Xcode fail if you strip with the linker
@@ -287,6 +292,16 @@ if( NOT NO_GL )
 	include_directories( ${OPENGL_INCLUDE_DIR} )
 endif( NOT NO_GL )
 
+if( USE_OPENAL AND NOT NO_SOUND )
+	find_package( OpenAL REQUIRED )
+	pkg_check_modules( SNDFILE REQUIRED IMPORTED_TARGET sndfile )
+	pkg_check_modules( MPG123 REQUIRED IMPORTED_TARGET libmpg123 )
+	include_directories( ${OPENAL_INCLUDE_DIR} )
+	set( ZDOOM_LIBS ${ZDOOM_LIBS} ${OPENAL_LIBRARY} PkgConfig::SNDFILE PkgConfig::MPG123 )
+	add_definitions( -DHAVE_SNDFILE -DHAVE_MPG123 )
+endif()
+
+if( NOT USE_OPENAL AND NOT NO_SOUND )
 # Decide on the name of the FMOD library we want to use.
 
 if( NOT FMOD_LIB_NAME AND MSVC )
@@ -345,6 +360,7 @@ else( FMOD_LIBRARY )
 		message( SEND_ERROR "Could not find FMOD library" )
 	endif ( NOT NO_SOUND )
 endif( FMOD_LIBRARY )
+endif()
 
 
 # Search for FluidSynth
@@ -656,8 +672,11 @@ message( STATUS "Fluid synth libs: ${FLUIDSYNTH_LIBRARIES}" )
 set( ZDOOM_LIBS ${ZDOOM_LIBS} "${ZLIB_LIBRARIES}" "${JPEG_LIBRARIES}" "${BZIP2_LIBRARIES}" "${GME_LIBRARIES}" )
 # [BB] Without sound, we don't need FMOD.
 if ( NOT NO_SOUND )
-	set( ZDOOM_LIBS ${ZDOOM_LIBS} "${FMOD_LIBRARY}" )
-	include_directories( "${ZLIB_INCLUDE_DIR}" "${FMOD_INCLUDE_DIR}" "${BZIP2_INCLUDE_DIR}" "${LZMA_INCLUDE_DIR}" "${JPEG_INCLUDE_DIR}" "${GME_INCLUDE_DIR}" )
+	if( NOT USE_OPENAL )
+		set( ZDOOM_LIBS ${ZDOOM_LIBS} "${FMOD_LIBRARY}" )
+		include_directories( "${FMOD_INCLUDE_DIR}" )
+	endif()
+	include_directories( "${ZLIB_INCLUDE_DIR}" "${BZIP2_INCLUDE_DIR}" "${LZMA_INCLUDE_DIR}" "${JPEG_INCLUDE_DIR}" "${GME_INCLUDE_DIR}" )
 else ( NOT NO_SOUND )
 	include_directories( "${ZLIB_INCLUDE_DIR}" "${BZIP2_INCLUDE_DIR}" "${LZMA_INCLUDE_DIR}" "${JPEG_INCLUDE_DIR}" "${GME_INCLUDE_DIR}" )
 endif ( NOT NO_SOUND )
@@ -671,11 +690,11 @@ if( WIN32 )
 endif ( WIN32 )
 
 # [AK] We need Opus for encoding/decoding VoIP audio packets, and RNNoise for noise suppression.
-if ( NOT NO_SOUND )
+if ( NOT NO_SOUND AND NOT USE_OPENAL )
 	find_package( Opus REQUIRED )
 	include_directories( ${OPUS_INCLUDE_DIR} )
 	set( ZDOOM_LIBS ${ZDOOM_LIBS} ${OPUS_LIBRARIES} rnnoise )
-endif ( NOT NO_SOUND )
+endif()
 
 if( NOT DYN_FLUIDSYNTH)
 	if( FLUIDSYNTH_FOUND )
@@ -693,6 +712,9 @@ if( APPLE )
 endif( APPLE )
 
 # Start defining source files for ZDoom
+if( USE_OPENAL AND NOT NO_SOUND )
+	set( OPENAL_SOURCES sound/oalsound.cpp sound/sndfile_decoder.cpp sound/mpg123_decoder.cpp )
+endif()
 set( PLAT_WIN32_SOURCES
 	gl/hqnx_asm/hq2x_asm.cpp
 	gl/hqnx_asm/hq3x_asm.cpp
@@ -1351,6 +1373,7 @@ add_executable( zdoom WIN32
 	sound/fmodsound.cpp
 	sound/i_music.cpp
 	sound/i_sound.cpp
+	${OPENAL_SOURCES}
 	sound/music_cd.cpp
 	sound/music_dumb.cpp
 	sound/music_gme.cpp

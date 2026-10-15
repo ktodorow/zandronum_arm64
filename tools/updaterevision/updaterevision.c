@@ -36,7 +36,7 @@ static int valid_source(const char *hash, const char *date)
 	return 1;
 }
 
-static int archive_info(char *hash, size_t hashsize, char *date, size_t datesize)
+static int archive_info(char *hash, size_t hashsize, char *date, size_t datesize, int *dirty)
 {
 	char line[128];
 	FILE *stream = fopen("source-provenance.txt", "r");
@@ -53,6 +53,13 @@ static int archive_info(char *hash, size_t hashsize, char *date, size_t datesize
 				stripnl(line);
 				snprintf(date, datesize, "%s", line + 9);
 				got = valid_source(hash, date);
+				/* Worktree snapshots can carry uncommitted port changes. */
+				if (fgets(line, sizeof line, stream))
+				{
+					stripnl(line);
+					if (!strcmp(line, "git_dirty=1"))
+						*dirty = 1;
+				}
 			}
 		}
 		fclose(stream);
@@ -71,7 +78,7 @@ static int source_info(char *hash, size_t hashsize, char *date, size_t datesize,
 	/* A source-root checkout takes precedence if an archive is imported into Git.
 	 * .git may be a directory or a linked-worktree file. */
 	if (stat(".git", &gitdir) != 0)
-		return archive_info(hash, hashsize, date, datesize);
+		return archive_info(hash, hashsize, date, datesize, dirty);
 	/* Do not accidentally report an enclosing repository's revision. */
 	stream = popen("git rev-parse --show-prefix", "r");
 	if (stream == NULL)

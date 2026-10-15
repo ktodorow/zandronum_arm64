@@ -61,7 +61,13 @@ extern HINSTANCE g_hInst;
 #include <math.h>
 
 #ifndef NO_SOUND
+#ifdef NO_FMOD
+#include "oalsound.h"
+#include "sndfile_decoder.h"
+#include "mpg123_decoder.h"
+#else
 #include "fmodsound.h"
+#endif
 #endif
 
 #include "m_swap.h"
@@ -263,7 +269,11 @@ void I_InitSound ()
 		return;
 	}
 
+#ifdef NO_FMOD
+	GSnd = new OpenALSoundRenderer;
+#else
 	GSnd = new FMODSoundRenderer;
+#endif
 
 	if (!GSnd->IsValid ())
 	{
@@ -338,7 +348,25 @@ FString SoundRenderer::GatherStats ()
 
 short *SoundRenderer::DecodeSample(int outlen, const void *coded, int sizebytes, ECodecType type)
 {
+#ifdef NO_FMOD
+	MemoryReader reader((const char *)coded, sizebytes);
+	SoundDecoder *decoder = CreateDecoder(&reader);
+	if (decoder == NULL) return NULL;
+	ChannelConfig channels;
+	SampleType sampleType;
+	int rate;
+	decoder->getInfo(&rate, &channels, &sampleType);
+	short *samples = NULL;
+	if (channels == ChannelConfig_Mono && sampleType == SampleType_Int16 && outlen > 0)
+	{
+		samples = (short *)calloc(1, outlen);
+		if (samples != NULL) decoder->read((char *)samples, outlen);
+	}
+	delete decoder;
+	return samples;
+#else
 	return NULL;
+#endif
 }
 
 void SoundRenderer::DrawWaveDebug(int mode)
@@ -519,3 +547,49 @@ SoundHandle SoundRenderer::LoadSoundVoc(BYTE *sfxdata, int length)
 	return retval;
 }
 
+
+#ifdef NO_FMOD
+SoundDecoder *SoundRenderer::CreateDecoder(FileReader *reader)
+{
+    SoundDecoder *decoder = NULL;
+    int pos = reader->Tell();
+
+#ifdef HAVE_MPG123
+		decoder = new MPG123Decoder;
+		if (decoder->open(reader))
+			return decoder;
+		reader->Seek(pos, SEEK_SET);
+
+		delete decoder;
+		decoder = NULL;
+#endif
+#ifdef HAVE_SNDFILE
+		decoder = new SndFileDecoder;
+		if (decoder->open(reader))
+			return decoder;
+		reader->Seek(pos, SEEK_SET);
+
+		delete decoder;
+		decoder = NULL;
+#endif
+    return decoder;
+}
+
+
+// Default readAll implementation, for decoders that can't do anything better
+TArray<char> SoundDecoder::readAll()
+{
+    TArray<char> output;
+    size_t total = 0;
+    size_t got;
+
+    output.Resize(total+32768);
+    while((got=read(&output[total], output.Size()-total)) > 0)
+    {
+        total += got;
+        output.Resize(total*2);
+    }
+    output.Resize(total);
+    return output;
+}
+#endif

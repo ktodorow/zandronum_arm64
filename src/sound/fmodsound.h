@@ -1,7 +1,7 @@
 #ifndef FMODSOUND_H
 #define FMODSOUND_H
 
-#ifndef NO_SOUND
+#if !defined(NO_SOUND) && !defined(NO_FMOD)
 #include "i_sound.h"
 #include "fmod_wrap.h"
 

@@ -120,6 +120,17 @@ class SourceIdentity(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Cannot identify port source", result.stderr)
 
+    def test_dirty_worktree_snapshot_keeps_release_identity(self):
+        commit = self.git("rev-parse", "HEAD")
+        date = self.git("show", "-s", "--format=%cI", "HEAD")
+        shutil.rmtree(self.source / ".git")
+        (self.source / "source-provenance.txt").write_text(
+            f"git_commit={commit}\ngit_time={date}\ngit_dirty=1\n")
+        self.generate(env=dict(os.environ, PATH=""))
+        result = self.identity()
+        self.assertEqual(result[0], commit)
+        self.assertIn("dirty", result[1])
+
 
 if __name__ == "__main__":
     unittest.main()
