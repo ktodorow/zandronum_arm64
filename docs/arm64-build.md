@@ -100,6 +100,42 @@ Trixie, glibc 2.41 and GCC14-era libstdc++; a live symbol comparison and real
 Mali/display/audio checks remain necessary during #3 and later runtime work.
 Desktop GL/GLU linkage does not establish a working accelerated handheld path.
 
+## GL sky cache regression
+
+Sky portal keys use byte comparison. Preserve their full representation when
+copying into `UniqueList`; memberwise assignment can leave padding from old
+heap contents. On AArch64 this created duplicate sky portals and repeated
+sky rendering in busy scenes.
+
+Attach native GDB with matching symbols in an outdoor GL scene, then run:
+
+```gdb
+source tools/arm64/check-sky-cache.gdb
+```
+
+Check waits for prepared draw lists and rejects identical sky fields stored
+as separate keys. Active Doom II MAP07 fails before padding-preserving copy;
+frozen actors can hide defect by changing allocation patterns.
+
+## Node-builder angle regression
+
+GL subsector closure requires wrapped angles in every quadrant. Converting
+negative `atan2` results directly to unsigned `angle_t` clamps them to zero
+on AArch64. Convert through signed `int32` first; old `CACH` node caches are
+rejected in favor of `CAC2` so damaged geometry is rebuilt.
+
+Attach native GDB to client and load matching symbols, then run:
+
+```gdb
+source tools/arm64/check-nodebuilder-angles.gdb
+```
+
+Check calls actual `FNodeBuilder::PointToAngle` for eight compass directions.
+Original client fails southwest, south and southeast; fixed client passes.
+R36S saved-scene replay additionally verifies complete walls/floors and cache
+replacement through actual renderer. Device branch records full replay in
+`docs/r36s-rendering.md`. Frame-rate qualification remains separate.
+
 ## Fresh rebuild and scoped cleanup
 
 ```sh

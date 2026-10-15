@@ -53,7 +53,7 @@ Deleting live INI creates fresh defaults and applies profile again.
 | Owner data under `/roms2/ports/zandronum` | Engine contract |
 | --- | --- |
 | `config/zandronum.ini` | Explicit `-config`; `FGameConfigFile::GetConfigPath` |
-| `saves/*.zds` | Explicit `-savedir`; `G_BuildSaveName` |
+| `saves/*.zds` (GL), `saves/software/*.zds` (software) | Explicit `-savedir`; `G_BuildSaveName` |
 | `config/zandronum.before-controls-v1.ini` | One-time pre-profile backup |
 | `log.txt`, `logs/*-previous.log` | Current/previous packaged launch evidence |
 
@@ -61,6 +61,8 @@ Package updates contain neither live INI nor saves; install without
 `rsync --delete`. No XDG redirection claim substitutes for checking actual
 engine-written files. Doom and Doom II share engine's Doom configuration;
 save menu filters saves by content. Use matching IWAD when reloading.
+Issue #6 separates [renderer-specific saves](r36s-rendering.md#selection-and-saves);
+engine rejects loading GL saves in software and vice versa.
 
 ## Repeatable physical scenario
 
@@ -147,9 +149,10 @@ button codes and axis ranges are available from inspector above.
 | Exit/frontend | Repeated SELECT+START exits report status 0 and active restored frontend |
 
 Owner reports missing floor/wall surfaces and visibility through walls during
-gameplay. Renderer correctness remains **failed/unaccepted**, tracked by
-[#6](https://github.com/ktodorow/zandronum_arm64/issues/6); input/persistence
-results do not accept overall single-player milestone. Retained
+gameplay during issue #4. Issue [#6](https://github.com/ktodorow/zandronum_arm64/issues/6)
+subsequently traced missing GL geometry to AArch64 node-builder angle conversion;
+see [fix and renderer checks](r36s-rendering.md). Input/persistence results
+alone do not accept overall single-player milestone. Retained
 `doom-relaunched-e1m2.png` and matching `save3.zds` preserve E1M2 view for
 renderer diagnosis; compare surfaces with reference rendering in that issue.
 

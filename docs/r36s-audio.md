@@ -16,7 +16,8 @@ synth process. Decoder availability alone does not prove music playback.
 
 Inherited release default `snd_mididevice=-1` selects FMOD. Actual issue #4
 device log reports `Starting MIDI playback failed` with that setting.
-Package `audio.cfg` selects `snd_mididevice=-3` (Emulated OPL FM Synth).
+Package `audio.cfg` selects `snd_mididevice=-3` (Emulated OPL FM Synth)
+and `opl_core=1` (DBOPL), accepted during [renderer qualification](r36s-rendering.md).
 This is handheld policy; common engine and other builds retain their defaults.
 
 Package-local `alsoft.conf` selects `drivers = alsa`, using installed ALSA
@@ -27,19 +28,24 @@ No firmware libraries or system-wide mixer settings are changed.
 
 ## Upgrade and volume behavior
 
-Runner copies existing INI once to `config/zandronum.before-audio-v1.ini`,
-then executes audio profile after loading configuration. Engine archives
-`r36s_audio_profile=1` with settings on clean exit. Failed initialization
+Runner copies existing INI once to `config/zandronum.before-audio-v2.ini`,
+then executes audio profile 2 after loading configuration. Fresh installs
+and upgrades from profile 1 receive DBOPL. Engine archives
+`r36s_audio_profile=2` with settings on clean exit. Failed initialization
 before configuration write retries profile next launch. Later launches keep
 owner's MIDI-device and volume settings. Controls migration remains separate;
 fresh configurations receive both profiles.
 
-Migration changes MIDI device only; it preserves `snd_sfxvolume`,
+Migration selects MIDI device and DBOPL core; it preserves `snd_sfxvolume`,
 `snd_musicvolume` and physical mixer volume. Use controller Sound Options to
 mute/raise effects and music independently. Firmware volume keys control
 handheld output; package does not force mixer to maximum at launch.
 
 ## Device checks, 2026-10-15
+
+Initial profile 1 evidence follows. Profile 2 keeps same OpenAL/ALSA output
+and volumes, selects accepted DBOPL backend, and is packaged with fixed client.
+Final profile migration/relaunch evidence appears in [rendering guide](r36s-rendering.md).
 
 Device matches [saved runtime snapshot](research/r36s-device-snapshot.md).
 Client remains `c7cecc51304e883d4c23e546785b39dab4161ac1cc18f8a478fff76c0942371e`;

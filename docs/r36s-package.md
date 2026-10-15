@@ -1,27 +1,31 @@
 # Personal R36S PortMaster package
 
 Issues [#3](https://github.com/ktodorow/zandronum_arm64/issues/3),
-[#4](https://github.com/ktodorow/zandronum_arm64/issues/4) and
-[#5](https://github.com/ktodorow/zandronum_arm64/issues/5), branch `r36s`,
+[#4](https://github.com/ktodorow/zandronum_arm64/issues/4),
+[#5](https://github.com/ktodorow/zandronum_arm64/issues/5) and
+[#6](https://github.com/ktodorow/zandronum_arm64/issues/6), branch `r36s`,
 derived from ARM master, including timer fix `a21bcb037`. Scope: native-resolution
-launch, gameplay/menu controls, persistence, audio and frontend recovery. Acceptance follows
+launch, gameplay/menu controls, persistence, audio, rendering and frontend recovery. Acceptance follows
 [main specification](specs/zandronum-3.2.1-arm64-r36s.md) and
 [device test workflow](portmaster-testing.md). Owner confirmed visible
 menu/game, Ports-menu launch and working SELECT+START exit on updated build.
 Hardware replay also confirms normal exit and frontend restoration.
 Gameplay profile and persistence scenario: [single-player guide](r36s-single-player.md).
 Audio path, upgrade and listening checks: [audio guide](r36s-audio.md).
+Renderer selection, separate saves and visual checks: [rendering guide](r36s-rendering.md).
 
 ## Build and stage
 
 Start with verified client export from [ARM64 build guide](arm64-build.md),
-including common SDL signal-timer shutdown fix described below. Original
-issue #2 client initializes correctly but crashes during normal SDL teardown.
+including common SDL signal-timer shutdown fix and issue #6 signed-angle,
+node-cache invalidation and sky-key copy fixes. Original issue #2 client
+initializes correctly but crashes during normal SDL teardown; earlier clients
+also retain missing-surface and duplicate-sky defects.
 Run from checkout with Docker Desktop and Python 3 available:
 
 ```sh
 python3 tools/r36s/build-runtime.py --output ../zandronum-arm64-artifacts/issue-3/runtime-scoped
-python3 tools/r36s/package.py --client ../zandronum-arm64-artifacts/issue-3/client-timer-fix --runtime ../zandronum-arm64-artifacts/issue-3/runtime-scoped --output ../zandronum-arm64-artifacts/issue-3/package
+python3 tools/r36s/package.py --client ../zandronum-arm64-artifacts/issue-6/client-sky-fix --runtime ../zandronum-arm64-artifacts/issue-3/runtime-scoped --output ../zandronum-arm64-artifacts/issue-6/package-single-player
 python3 tools/arm64/build.py cleanup
 ```
 
@@ -51,7 +55,7 @@ Inspected installation uses `/roms2/ports`. Set SSH destination outside
 repository; use existing SSH authentication:
 
 ```sh
-rsync -a --no-owner --no-group ../zandronum-arm64-artifacts/issue-3/package/ "$R36S_SSH_HOST:/roms2/ports/"
+rsync -a --no-owner --no-group ../zandronum-arm64-artifacts/issue-6/package-single-player/ "$R36S_SSH_HOST:/roms2/ports/"
 ssh "$R36S_SSH_HOST" 'cd /roms2/ports && sha256sum -c zandronum/managed-files.sha256'
 ```
 
@@ -72,7 +76,7 @@ directory becomes unavailable.
 | Data | Location under `/roms2/ports/zandronum` |
 | --- | --- |
 | Generated configuration | `config/zandronum.ini`, explicit engine `-config` |
-| Saves | `saves/`, explicit engine `-savedir` |
+| Saves | `saves/software/` (software); original `saves/` (GL), explicit engine `-savedir` |
 | Optional private IWADs | `iwads/doom2.wad` or `iwads/doom.wad`, case insensitive |
 | Preferred renderer | `renderer.txt`: `gl4es` (default) or `software` |
 | Current output and exit status | `log.txt` |
@@ -109,12 +113,15 @@ installed PortMaster control/dArkOS hooks, registers cleanup, stops
 Only then may client start. Logs retain memory/service state around stop
 and recovery. Never launch binary directly for device tests.
 
-Default accelerated path uses SDL1.2 compatibility over firmware SDL2
-KMSDRM. Installed PortMaster graphics hook selects gl4es; SDL's GL driver
+Default `gl4es` path uses installed PortMaster graphics hook; SDL's GL driver
 and EGL wrapper are package-private, while `LIBGL_EGL`/`LIBGL_GLES` name
 firmware Mali-backed libraries explicitly. Native engine arguments force
-640×480 fullscreen. `software` selects engine software renderer and SDL2
-GLES presentation; fallback remains unqualified until separately tested.
+640×480 fullscreen. Common node-builder fix restores missing walls/floors;
+GL4ES and vendor libraries remain unchanged. Selectable software fallback uses
+SDL1.2 compatibility over firmware SDL2 KMSDRM/GLES2 presentation with native
+640×480 CPU rendering. See [qualification results](r36s-rendering.md).
+Engine refuses cross-renderer saves, so software has separate save directory;
+existing GL saves remain available through default GL selection.
 
 Before engine initialization, checker runs `ldd -r` and resolves all 260
 required SDL2 symbols against actual selected libraries. Runtime maps,
@@ -220,3 +227,8 @@ Host evidence resides outside Git at
 `../zandronum-arm64-artifacts/issue-3/`: inspected installed helpers,
 pinned graphics source, runtime exports/build logs, staged package and
 retrieved device logs. No SSH credentials are recorded.
+
+Single-player package defaults to GL4ES at native 640×480 and DBOPL music.
+Runner applies audio profile 2 once on fresh installs/upgrades, backs up
+existing INI, then keeps saved audio choices and volumes. Common client fixes
+and final package identity are recorded in [rendering evidence](r36s-rendering.md).
