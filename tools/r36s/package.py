@@ -26,6 +26,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client", required=True, type=Path)
     parser.add_argument("--runtime", required=True, type=Path)
+    parser.add_argument("--launcher", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -35,8 +36,10 @@ def main():
         parser.error("output must be absent or empty; install managed files over existing package")
     client = args.client.resolve()
     runtime = args.runtime.resolve()
+    launcher = args.launcher.resolve()
     verify_export(client, parser)
     verify_export(runtime, parser)
+    verify_export(launcher, parser)
     game = output / "zandronum"
     game.mkdir(parents=True)
     packaging = ROOT / "packaging/r36s"
@@ -46,6 +49,7 @@ def main():
             shutil.copy2(source, game)
     for name in ("zandronum", "zandronum.pk3", "brightmaps.pk3", "skulltag_actors.pk3"):
         shutil.copy2(client / name, game)
+    shutil.copy2(launcher / "r36s-launcher", game)
     libs = game / "libs.aarch64"
     libs.mkdir()
     shutil.copy2(client / "lib/libSDL-1.2.so.0", libs)
@@ -53,7 +57,8 @@ def main():
         shutil.copytree(runtime / name, game / name, dirs_exist_ok=True)
     shutil.copytree(runtime / "evidence", game / "evidence/runtime")
     shutil.copytree(client / "evidence", game / "evidence/client")
-    for path in (output / "Zandronum.sh", game / "runner.sh", game / "restore-frontend.sh"):
+    shutil.copytree(launcher / "evidence", game / "evidence/launcher")
+    for path in (output / "Zandronum.sh", game / "runner.sh", game / "restore-frontend.sh", game / "r36s-launcher"):
         path.chmod(0o755)
     (game / "package.json").write_text(json.dumps({
         "packaging_commit": subprocess.check_output(
@@ -61,9 +66,10 @@ def main():
         "packaging_dirty": bool(subprocess.check_output(
             ["git", "-C", str(ROOT), "status", "--porcelain"], text=True).strip()),
         "client_sha256": digest(client / "zandronum"),
+        "launcher_sha256": digest(launcher / "r36s-launcher"),
         "client_source_provenance": (client / "evidence/source-provenance.txt").read_text(),
         "gl4es_commit": (runtime / "evidence/gl4es-commit.txt").read_text().strip(),
-        "scope": "Issues #3/#4/#5/#6 launch, controls, persistence, audio and rendering; see device evidence for qualification",
+        "scope": "Issues #3-#8 personal single-player package with content profiles; see device evidence for qualification",
     }, indent=2) + "\n")
     files = sorted(p for p in output.rglob("*") if p.is_file())
     (game / "managed-files.sha256").write_text("".join(

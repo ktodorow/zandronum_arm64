@@ -25,11 +25,13 @@ source "$controlfolder/control.txt"
 
 game_pid=''
 helper_pid=''
+selection_file=''
 cleanup() {
     status=$?
     trap - EXIT INT TERM HUP
     [[ -n "$game_pid" ]] && kill -TERM "$game_pid" 2>/dev/null
     [[ -n "$game_pid" ]] && wait "$game_pid" 2>/dev/null
+    [[ -n "$selection_file" ]] && rm -f -- "$selection_file"
     # Scope PortMaster's finish hook to this package's helper.
     pm_gptokeyb_finish() {
         if [[ -n "$helper_pid" ]]; then
@@ -64,7 +66,52 @@ get_controls
 echo "PortMaster=$PM_VERSION CFW=$CFW_NAME/$CFW_VERSION controlfolder=$controlfolder ports=/$directory/ports"
 echo "Controller=$DEVICE mapping=$sdl_controllerconfig"
 
+renderer=${ZANDRONUM_RENDERER:-$(cat renderer.txt 2>/dev/null)}
+renderer=${renderer:-gl4es}
+save_key=base
+addon_args=()
+export LD_LIBRARY_PATH="$gamedir/libs.$DEVICE_ARCH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+export SDL_VIDEODRIVER=kmsdrm
+export SDL_VIDEO_EGL_DRIVER=/usr/lib/aarch64-linux-gnu/libEGL.so.1
+export SDL12COMPAT_OPENGL_SCALING=0 SDL12COMPAT_DEBUG_LOGGING=1
+export SDL12COMPAT_USE_GAME_CONTROLLERS=1
+
 iwad=${ZANDRONUM_IWAD:-}
+# Explicit IWAD/engine arguments retain scripted diagnostic launches.
+if [[ ${ZANDRONUM_LAUNCHER:-1} != 0 && -z "$iwad" && $# == 0 ]]; then
+    selection_file=$(mktemp "$gamedir/config/launcher-selection.XXXXXX") || exit 1
+    SDL_RENDER_DRIVER=opengles2 ./r36s-launcher --game-dir "$gamedir" \
+        --content-root "/$directory/doom" --renderer "$renderer" --output "$selection_file" &
+    game_pid=$!
+    wait "$game_pid"
+    status=$?
+    game_pid=''
+    [[ $status == 10 ]] && exit 0
+    if [[ $status != 0 ]]; then
+        pm_show_error 'Zandronum content menu failed. See zandronum/log.txt.'
+        exit "$status"
+    fi
+    mapfile -d '' -t selection < "$selection_file"
+    rm -f -- "$selection_file"
+    selection_file=''
+    if (( ${#selection[@]} < 3 || ${#selection[@]} > 131 )) ||
+        [[ ! ${selection[0]} =~ ^(gl4es|software)$ ]] ||
+        [[ ${selection[1]} != /* || ! -f ${selection[1]} ]] ||
+        [[ ! ${selection[2]} =~ ^(base|set-[0-9a-f]{16})$ ]]; then
+        echo 'ERROR: invalid content-menu selection.'
+        exit 2
+    fi
+    renderer=${selection[0]}
+    iwad=${selection[1]}
+    save_key=${selection[2]}
+    if (( ${#selection[@]} > 3 )); then
+        for addon in "${selection[@]:3}"; do
+            [[ "$addon" == /* && -f "$addon" ]] || exit 2
+        done
+        addon_args=(-file "${selection[@]:3}")
+    fi
+fi
 if [[ -z "$iwad" ]]; then
     for name in doom2.wad doom.wad; do
         for location in "$gamedir/iwads" "/$directory/doom"; do
@@ -74,21 +121,13 @@ if [[ -z "$iwad" ]]; then
     done
 fi
 if [[ ! -f "$iwad" ]]; then
-    requirement="Doom data required. Copy your own doom.wad or doom2.wad to /$directory/doom or $gamedir/iwads. No game data downloaded."
+    requirement="Base game file missing. Copy your own WAD or PK3 to /$directory/doom or $gamedir/iwads, then choose it in content menu or set ZANDRONUM_IWAD to its path. No game data downloaded."
     echo "$requirement"
     pm_show_error "$requirement"
     exit 2
 fi
 
-renderer=${ZANDRONUM_RENDERER:-$(cat renderer.txt 2>/dev/null)}
-renderer=${renderer:-gl4es}
 save_directory="$gamedir/saves"
-export LD_LIBRARY_PATH="$gamedir/libs.$DEVICE_ARCH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
-export SDL_VIDEODRIVER=kmsdrm
-export SDL_VIDEO_EGL_DRIVER=/usr/lib/aarch64-linux-gnu/libEGL.so.1
-export SDL12COMPAT_OPENGL_SCALING=0 SDL12COMPAT_DEBUG_LOGGING=1
-export SDL12COMPAT_USE_GAME_CONTROLLERS=1
 case "$renderer" in
     gl4es)
         graphics_hook="$controlfolder/libgl_${CFW_NAME}.txt"
@@ -108,29 +147,37 @@ case "$renderer" in
         ;;
     *) echo "ERROR: renderer must be gl4es or software, got $renderer"; exit 2 ;;
 esac
+config_file="$gamedir/config/zandronum.ini"
+[[ -f "$config_file" ]] || cp defaults.ini "$config_file" || exit 1
+if [[ "$save_key" != base ]]; then
+    config_file="$gamedir/config/profiles/$save_key/zandronum.ini"
+    save_directory="$gamedir/saves/profiles/$save_key/$renderer"
+    mkdir -p "$(dirname -- "$config_file")" || exit 1
+    [[ -f "$config_file" ]] || cp "$gamedir/config/zandronum.ini" "$config_file" || exit 1
+fi
 mkdir -p "$save_directory" || exit 1
 echo "Renderer=$renderer internal=640x480 display=${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} SDL=$SDL_VIDEODRIVER"
 echo "IWAD=$iwad"
 sha256sum "$iwad" zandronum *.pk3
+(( ${#addon_args[@]} )) && sha256sum "${addon_args[@]:1}"
 echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH EGL=$SDL_VIDEO_EGL_DRIVER"
 python3 check-runtime.py || exit 1
-[[ -f config/zandronum.ini ]] || cp defaults.ini config/zandronum.ini
 
 # Migrate #3 menu-only configuration once; retain owner changes on relaunch.
 # Marker is archived by engine with bindings, so failed initialization retries.
 profile_args=()
-if ! grep -qx 'r36s_controls_profile=1' config/zandronum.ini; then
-    if [[ ! -e config/zandronum.before-controls-v1.ini ]]; then
-        cp config/zandronum.ini config/zandronum.before-controls-v1.ini || exit 1
+if ! grep -qx 'r36s_controls_profile=1' "$config_file"; then
+    if [[ ! -e "${config_file%.ini}.before-controls-v1.ini" ]]; then
+        cp "$config_file" "${config_file%.ini}.before-controls-v1.ini" || exit 1
     fi
     profile_args+=(-exec "$gamedir/controls.cfg")
     echo 'Installing controls profile 1; original configuration backed up.'
 else
     echo 'Keeping saved controls/settings (profile 1 already installed).'
 fi
-if ! grep -qx 'r36s_audio_profile=2' config/zandronum.ini; then
-    if [[ ! -e config/zandronum.before-audio-v2.ini ]]; then
-        cp config/zandronum.ini config/zandronum.before-audio-v2.ini || exit 1
+if ! grep -qx 'r36s_audio_profile=2' "$config_file"; then
+    if [[ ! -e "${config_file%.ini}.before-audio-v2.ini" ]]; then
+        cp "$config_file" "${config_file%.ini}.before-audio-v2.ini" || exit 1
     fi
     profile_args+=(-exec "$gamedir/audio.cfg")
     echo 'Installing audio profile 2; original configuration backed up.'
@@ -138,15 +185,15 @@ else
     echo 'Keeping saved audio settings (profile 2 already installed).'
 fi
 echo 'Audio=OpenAL Soft/ALSA; built-in DBOPL default; saved engine volumes retained.'
-echo "Configuration=$gamedir/config/zandronum.ini Saves=$save_directory"
+echo "Configuration=$config_file Saves=$save_directory ContentSet=$save_key"
 # Helper supplies keyboard/mouse input; native joystick stays disabled.
 pm_platform_helper
 # Installed helper uses pkill -f; match only client's explicit argv[0].
 "$controlfolder/gptokeyb" -k '^\./zandronum( |$)' -hotkey back -c "$gamedir/gameplay.gptk" &
 helper_pid=$!
-./zandronum -iwad "$iwad" -config "$gamedir/config/zandronum.ini" \
+./zandronum -iwad "$iwad" -config "$config_file" \
     -savedir "$save_directory" -width 640 -height 480 \
-    "${profile_args[@]}" +vid_renderer "$renderer_id" +fullscreen 1 +use_joystick 0 "$@" &
+    "${profile_args[@]}" "${addon_args[@]}" +vid_renderer "$renderer_id" +fullscreen 1 +use_joystick 0 "$@" &
 game_pid=$!
 sleep 2
 if kill -0 "$game_pid" 2>/dev/null; then

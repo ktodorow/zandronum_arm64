@@ -18,12 +18,14 @@ default by explicit owner choice, with sustained below-30 heavy views recorded.
 `SDL12COMPAT_OPENGL_SCALING=0` prevents SDL's compatibility scaling path.
 Launcher always supplies `-width 640 -height 480 +fullscreen 1`.
 
-Create `/roms2/ports/zandronum/renderer.txt` containing `software` or `gl4es`
-to choose future launches. `ZANDRONUM_RENDERER` overrides file for one launch:
+Choose **Renderer** in [content menu](r36s-launcher.md); last selection and
+named profiles retain that choice. `/roms2/ports/zandronum/renderer.txt`
+containing `software` or `gl4es` initializes fresh combinations and diagnostic
+launches. For a direct one-run diagnostic override, bypass content menu:
 
 ```sh
-ssh "$R36S_SSH_HOST" 'ZANDRONUM_RENDERER=software bash /roms2/ports/Zandronum.sh'
-ssh "$R36S_SSH_HOST" 'ZANDRONUM_RENDERER=gl4es bash /roms2/ports/Zandronum.sh'
+ssh "$R36S_SSH_HOST" 'ZANDRONUM_LAUNCHER=0 ZANDRONUM_RENDERER=software bash /roms2/ports/Zandronum.sh'
+ssh "$R36S_SSH_HOST" 'ZANDRONUM_LAUNCHER=0 ZANDRONUM_RENDERER=gl4es bash /roms2/ports/Zandronum.sh'
 ```
 
 Exit current run before selecting another renderer. Both paths use same
@@ -36,6 +38,8 @@ Engine identifies software saves as `ZANDRONUM (Software)` and GL saves as
 software autosaves from replacing existing GL saves. Existing GL progress
 requires GL renderer; no save conversion is supplied. Software uses original
 software lighting; GL-only effects are not promised.
+Custom content combinations keep settings and renderer-separated saves under
+their own [content-set directories](r36s-launcher.md#persistence-and-launch-boundary).
 
 ## Accelerated path: common ARM64 fixes
 

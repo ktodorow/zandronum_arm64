@@ -118,7 +118,7 @@ complete this gate. Full controller mapping and renderer qualification follow.
 | [#5](https://github.com/ktodorow/zandronum_arm64/issues/5) | Audible effects and base-game music during actual gameplay. |
 | [#6](https://github.com/ktodorow/zandronum_arm64/issues/6) | Qualify accelerated rendering and the software fallback for visible correctness and stability. |
 | [#7](https://github.com/ktodorow/zandronum_arm64/issues/7) | Native 640×480, sustained at least 30 FPS in representative original maps and a heavier combat scene with effects/music active; aim for 60 FPS and record dips. |
-| [#8](https://github.com/ktodorow/zandronum_arm64/issues/8) | Rebuild, install and accept the independently usable personal single-player package, including repeated launch/exit and persistence. |
+| [#8](https://github.com/ktodorow/zandronum_arm64/issues/8) | Rebuild, install and accept the independently usable personal single-player package, including repeated launch/exit, persistence and controller-operated local content profiles. |
 
 Issue #4 [controller/persistence scenario](r36s-single-player.md) covers
 save-name grid, actual data paths, relaunch and normal map transitions.
@@ -128,6 +128,10 @@ Issue #7 [performance evidence](r36s-performance.md) records native frame
 intervals, explicit dip policy and passing guided software Doom/Doom II/MAP07
 runs. Owner retains GL4ES default; its heavy scenes fail sustained-30 gate.
 Short diagnostic probes cannot replace sustained combat acceptance.
+Owner subsequently requested [local content launcher](r36s-launcher.md):
+verify base IWAD selection, ordered WAD/PK3 combinations, profile naming and
+reload, renderer/save isolation, missing content and menu cancellation through
+same lifecycle. Launcher must exit before gameplay begins.
 
 For each result, record date, build/resource/content identities, firmware and
 PortMaster versions, renderer/settings, map/scene and repeatable duration,

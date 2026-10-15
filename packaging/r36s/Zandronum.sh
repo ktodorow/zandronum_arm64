@@ -9,7 +9,7 @@ mkdir -p "$gamedir/logs"
 env_args=()
 for name in HOME USER LOGNAME PATH LANG TERM XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS \
     SDL_KMSDRM_DEVICE_INDEX SDL_KMSDRM_ORIENTATION SDL_KMSDRM_ROTATION \
-    ZANDRONUM_RENDERER ZANDRONUM_IWAD; do
+    ZANDRONUM_RENDERER ZANDRONUM_IWAD ZANDRONUM_LAUNCHER; do
     [[ -n ${!name+x} ]] && env_args+=(--setenv="$name=${!name}")
 done
 sudo -n systemd-run --unit=zandronum-r36s --collect \

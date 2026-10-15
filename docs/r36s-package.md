@@ -17,6 +17,8 @@ Renderer selection, separate saves and visual checks: [rendering guide](r36s-ren
 Frame capture and passing native-30 software runs, with GL4ES default retained
 by owner despite sustained heavy-scene dips:
 [performance guide](r36s-performance.md).
+Controller-operated local IWAD/WAD/PK3 combinations and named profiles:
+[launcher guide](r36s-launcher.md).
 
 ## Build and stage
 
@@ -29,7 +31,8 @@ Run from checkout with Docker Desktop and Python 3 available:
 
 ```sh
 python3 tools/r36s/build-runtime.py --output ../zandronum-arm64-artifacts/issue-3/runtime-scoped
-python3 tools/r36s/package.py --client ../zandronum-arm64-artifacts/issue-6/client-sky-fix --runtime ../zandronum-arm64-artifacts/issue-3/runtime-scoped --output ../zandronum-arm64-artifacts/issue-6/package-single-player
+python3 tools/r36s/build-launcher.py --output ../zandronum-arm64-artifacts/issue-8/launcher
+python3 tools/r36s/package.py --client ../zandronum-arm64-artifacts/issue-6/client-sky-fix --runtime ../zandronum-arm64-artifacts/issue-3/runtime-scoped --launcher ../zandronum-arm64-artifacts/issue-8/launcher --output ../zandronum-arm64-artifacts/issue-8/package-single-player
 python3 tools/arm64/build.py cleanup
 ```
 
@@ -49,17 +52,25 @@ versions, ELF dynamic sections and checksums accompany export.
 Package stages private sdl12-compat from client export, gl4es `libGL.so.1`
 and EGL wrapper, plus Debian GLU/OpenGL/GLdispatch libraries. Firmware
 SDL2, EGL, GLES, GBM and Mali libraries stay installed in firmware paths.
-Package verifies both export manifests before copying files. It includes
+Package verifies client, runtime and launcher export manifests before copying files. It includes
 client/resource identities and `managed-files.sha256`; it includes no IWAD,
 live configuration, saves, renderer preference or runtime logs.
 
 ## Install and use
 
+Installation is copy-only and single-player startup works offline. No
+`apt install`, runtime downloads or compilation on handheld. Docker recipes
+install build dependencies only inside builder. Libraries missing from
+supported stock firmware must be shipped privately with port, including
+transitive dependencies; development-device package installs are not an
+acceptable prerequisite. Distributed `DEPENDENCIES.md` documents bundled
+libraries and existing dArkOS runtime used by launcher/client.
+
 Inspected installation uses `/roms2/ports`. Set SSH destination outside
 repository; use existing SSH authentication:
 
 ```sh
-rsync -a --no-owner --no-group ../zandronum-arm64-artifacts/issue-6/package-single-player/ "$R36S_SSH_HOST:/roms2/ports/"
+rsync -a --no-owner --no-group ../zandronum-arm64-artifacts/issue-8/package-single-player/ "$R36S_SSH_HOST:/roms2/ports/"
 ssh "$R36S_SSH_HOST" 'cd /roms2/ports && sha256sum -c zandronum/managed-files.sha256'
 ```
 
@@ -71,6 +82,11 @@ can invoke same launcher:
 ssh "$R36S_SSH_HOST" 'bash /roms2/ports/Zandronum.sh'
 ```
 
+Normal launch opens content menu: choose base WAD/PK3, add-ons, load order,
+renderer and optional named profile, then **Play**. B exits menu to frontend.
+Diagnostic launches with engine arguments or `ZANDRONUM_IWAD` bypass menu;
+`ZANDRONUM_LAUNCHER=0` explicitly retains automatic base-game selection.
+
 Launcher returns after creating detached `zandronum-r36s.service`; return
 code reports unit submission, not game outcome. A second concurrent launch
 is rejected. Inspect `zandronum/log.txt` for game status; older runs move to
@@ -81,13 +97,21 @@ directory becomes unavailable.
 | --- | --- |
 | Generated configuration | `config/zandronum.ini`, explicit engine `-config` |
 | Saves | `saves/software/` (software); original `saves/` (GL), explicit engine `-savedir` |
-| Optional private IWADs | `iwads/doom2.wad` or `iwads/doom.wad`, case insensitive |
+| Optional private base games | `iwads/`, any local `.wad` or `.pk3` filename |
 | Preferred renderer | `renderer.txt`: `gl4es` (default) or `software` |
+| Local add-ons | `mods/` and `/roms2/doom/`, recursive WAD/PK3 scan |
+| Last selection and named combinations | `config/launcher/last.profile`, `config/launcher/profiles/*.profile` |
+| Custom combination settings and saves | `config/profiles/set-*/zandronum.ini`, `saves/profiles/set-*/gl4es/` or `software/` |
 | Current output and exit status | `log.txt` |
 | Previous run output | `logs/*-previous.log` |
-| Build/source identity | `package.json`, `evidence/client/`, `evidence/runtime/` |
+| Build/source identity | `package.json`, `evidence/client/`, `evidence/runtime/`, `evidence/launcher/` |
 
-IWAD discovery prefers Doom II, checking private `iwads/` then installed
+First menu selection uses first filename in sorted library; later launches
+restore last selection. Both Base game and Add-ons list every discovered
+WAD/PK3, regardless of name or IWAD/PWAD header. Owner assigns file roles and
+add-on order; engine checks required base-game data and content compatibility.
+Selected base cannot also appear in add-on order.
+With menu bypassed, IWAD discovery prefers Doom II, checking private `iwads/` then installed
 `/roms2/doom/`; next checks Doom in same order. `ZANDRONUM_IWAD` overrides
 discovery; invalid override exercises missing-data error without moving
 owner files. Supply your own IWAD. Missing data opens installed PortMaster
@@ -116,6 +140,9 @@ installed PortMaster control/dArkOS hooks, registers cleanup, stops
 `emulationstation.service`, then checks service and processes are gone.
 Only then may client start. Logs retain memory/service state around stop
 and recovery. Never launch binary directly for device tests.
+Content menu runs after frontend stop and before graphics-wrapper setup.
+It uses native SDL2 controller input; GPTOKEYB starts only after menu exits,
+immediately before engine. Cancellation and menu failure use same recovery path.
 
 Default `gl4es` path uses installed PortMaster graphics hook; SDL's GL driver
 and EGL wrapper are package-private, while `LIBGL_EGL`/`LIBGL_GLES` name
