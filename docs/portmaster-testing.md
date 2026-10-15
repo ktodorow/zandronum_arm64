@@ -129,9 +129,12 @@ intervals, explicit dip policy and passing guided software Doom/Doom II/MAP07
 runs. Owner retains GL4ES default; its heavy scenes fail sustained-30 gate.
 Short diagnostic probes cannot replace sustained combat acceptance.
 Owner subsequently requested [local content launcher](r36s-launcher.md):
-verify base IWAD selection, ordered WAD/PK3 combinations, profile naming and
+verify WAD/PK3 base selection, ordered WAD/PK3 combinations, profile naming and
 reload, renderer/save isolation, missing content and menu cancellation through
 same lifecycle. Launcher must exit before gameplay begins.
+
+Final clean build/deployment and owner-requested closure, including explicit
+limits on new physical checks, are recorded in [single-player delivery](r36s-single-player-release.md).
 
 For each result, record date, build/resource/content identities, firmware and
 PortMaster versions, renderer/settings, map/scene and repeatable duration,

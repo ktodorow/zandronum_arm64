@@ -19,6 +19,8 @@ by owner despite sustained heavy-scene dips:
 [performance guide](r36s-performance.md).
 Controller-operated local IWAD/WAD/PK3 combinations and named profiles:
 [launcher guide](r36s-launcher.md).
+Final clean source/export identities and owner-requested acceptance limits:
+[single-player delivery record](r36s-single-player-release.md).
 
 ## Build and stage
 

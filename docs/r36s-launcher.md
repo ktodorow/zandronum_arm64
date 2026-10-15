@@ -111,8 +111,9 @@ produces no handoff. These checks pass in ARM64 builder.
 ## Device status, 2026-10-15
 
 Installed on existing dArkOS R36S without replacing firmware libraries.
-All 291 managed files verify after generic base/add-on role update, including
-controller-replay evidence and offline dependency instructions. All 20 current
+All 291 managed files verify after generic base/add-on role update and final
+clean rebuild, including
+controller-replay evidence and offline dependency instructions. All 22 current
 configuration/save/preference files retain their hashes across this update;
 original 17 configuration/save files were also checked at initial installation.
 Device `ldd -r` resolves launcher dependencies.
@@ -123,3 +124,5 @@ started while menu is open. Generic WAD/PK3 role update is deployment-only at
 owner request: no launcher or game started on handheld for this update.
 Owner display/controller/profile checks and real menu-to-engine handoff remain
 pending; automated replay is supporting evidence.
+Final source/client identities and owner-requested closure limits appear in
+[single-player delivery record](r36s-single-player-release.md).
