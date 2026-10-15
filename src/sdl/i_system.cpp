@@ -279,8 +279,17 @@ void I_HandleAlarm (int sig)
 // Sets up the timer function based on if we can use signals for efficent CPU
 // usage.
 //
+static void I_ShutdownTimer()
+{
+	struct itimerval itv = {};
+	setitimer(ITIMER_REAL, &itv, NULL);
+	signal(SIGALRM, SIG_IGN);
+}
+
 void I_SelectTimer()
 {
+	// call_terms runs in reverse order; stop alarms before SDL_Quit unloads SDL2.
+	atterm(I_ShutdownTimer);
 	SEMAPHORE_INIT(timerWait, 0, 0)
 #ifndef __sun
 	signal(SIGALRM, I_HandleAlarm);
