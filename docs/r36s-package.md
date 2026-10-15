@@ -2,8 +2,9 @@
 
 Issues [#3](https://github.com/ktodorow/zandronum_arm64/issues/3),
 [#4](https://github.com/ktodorow/zandronum_arm64/issues/4),
-[#5](https://github.com/ktodorow/zandronum_arm64/issues/5) and
-[#6](https://github.com/ktodorow/zandronum_arm64/issues/6), branch `r36s`,
+[#5](https://github.com/ktodorow/zandronum_arm64/issues/5),
+[#6](https://github.com/ktodorow/zandronum_arm64/issues/6) and
+[#7](https://github.com/ktodorow/zandronum_arm64/issues/7), branch `r36s`,
 derived from ARM master, including timer fix `a21bcb037`. Scope: native-resolution
 launch, gameplay/menu controls, persistence, audio, rendering and frontend recovery. Acceptance follows
 [main specification](specs/zandronum-3.2.1-arm64-r36s.md) and
@@ -13,6 +14,9 @@ Hardware replay also confirms normal exit and frontend restoration.
 Gameplay profile and persistence scenario: [single-player guide](r36s-single-player.md).
 Audio path, upgrade and listening checks: [audio guide](r36s-audio.md).
 Renderer selection, separate saves and visual checks: [rendering guide](r36s-rendering.md).
+Frame capture and passing native-30 software runs, with GL4ES default retained
+by owner despite sustained heavy-scene dips:
+[performance guide](r36s-performance.md).
 
 ## Build and stage
 

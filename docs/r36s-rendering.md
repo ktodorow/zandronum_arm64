@@ -3,7 +3,8 @@
 Issue [#6](https://github.com/ktodorow/zandronum_arm64/issues/6), branch `r36s`.
 Uses [PortMaster package](r36s-package.md) and native 640×480 internal/display
 resolution. Correct base-game rendering takes priority over acceleration.
-Sustained frame-rate acceptance remains issue #7.
+Issue #7 qualifies software for sustained native-30 performance; owner keeps
+GL4ES default despite heavy-scene dips. See [measured performance](r36s-performance.md).
 
 ## Selection and saves
 
@@ -12,6 +13,8 @@ firmware Mali GLES2/KMSDRM. Package audio profile 2 selects built-in DBOPL
 (`snd_mididevice=-3`, `opl_core=1`) once for fresh installs and upgrades, then
 retains saved audio choices and volumes. Software remains selectable (`vid_renderer=0`):
 CPU draws game; sdl12-compat and firmware SDL2 present through GLES2/KMSDRM.
+Software passes representative native-30 performance checks; GL4ES remains
+default by explicit owner choice, with sustained below-30 heavy views recorded.
 `SDL12COMPAT_OPENGL_SCALING=0` prevents SDL's compatibility scaling path.
 Launcher always supplies `-width 640 -height 480 +fullscreen 1`.
 
@@ -270,7 +273,8 @@ on owner request. Device upgrade executes profile 2, then clean exit archives
 `r36s_audio_profile=2`, `opl_core=1` and unchanged volumes 1/1. Next packaged
 launch skips migration, retains settings and reports GL4ES using Mali-G31.
 Upgrade exit restores frontend; final requested launch remains running.
-Renderer qualification passes; sustained performance remains issue #7.
+Renderer qualification passes; subsequent [issue #7 measurements](r36s-performance.md)
+qualify optional software for native-30 performance while owner keeps GL4ES default.
 
 ## Repeatable device check
 

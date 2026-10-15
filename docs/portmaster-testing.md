@@ -124,6 +124,10 @@ Issue #4 [controller/persistence scenario](r36s-single-player.md) covers
 save-name grid, actual data paths, relaunch and normal map transitions.
 Issue #5 [audio scenario](r36s-audio.md) covers effects/music, independent
 volume controls, normal map continuity and retained settings after relaunch.
+Issue #7 [performance evidence](r36s-performance.md) records native frame
+intervals, explicit dip policy and passing guided software Doom/Doom II/MAP07
+runs. Owner retains GL4ES default; its heavy scenes fail sustained-30 gate.
+Short diagnostic probes cannot replace sustained combat acceptance.
 
 For each result, record date, build/resource/content identities, firmware and
 PortMaster versions, renderer/settings, map/scene and repeatable duration,
