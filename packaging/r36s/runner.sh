@@ -119,11 +119,21 @@ if ! grep -qx 'r36s_controls_profile=1' config/zandronum.ini; then
     if [[ ! -e config/zandronum.before-controls-v1.ini ]]; then
         cp config/zandronum.ini config/zandronum.before-controls-v1.ini || exit 1
     fi
-    profile_args=(-exec "$gamedir/controls.cfg")
+    profile_args+=(-exec "$gamedir/controls.cfg")
     echo 'Installing controls profile 1; original configuration backed up.'
 else
     echo 'Keeping saved controls/settings (profile 1 already installed).'
 fi
+if ! grep -qx 'r36s_audio_profile=1' config/zandronum.ini; then
+    if [[ ! -e config/zandronum.before-audio-v1.ini ]]; then
+        cp config/zandronum.ini config/zandronum.before-audio-v1.ini || exit 1
+    fi
+    profile_args+=(-exec "$gamedir/audio.cfg")
+    echo 'Installing audio profile 1; original configuration backed up.'
+else
+    echo 'Keeping saved audio settings (profile 1 already installed).'
+fi
+echo 'Audio=OpenAL Soft/ALSA; built-in OPL default; saved engine volumes retained.'
 echo "Configuration=$gamedir/config/zandronum.ini Saves=$gamedir/saves"
 # Helper supplies keyboard/mouse input; native joystick stays disabled.
 pm_platform_helper

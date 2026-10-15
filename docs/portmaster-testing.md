@@ -122,6 +122,8 @@ complete this gate. Full controller mapping and renderer qualification follow.
 
 Issue #4 [controller/persistence scenario](r36s-single-player.md) covers
 save-name grid, actual data paths, relaunch and normal map transitions.
+Issue #5 [audio scenario](r36s-audio.md) covers effects/music, independent
+volume controls, normal map continuity and retained settings after relaunch.
 
 For each result, record date, build/resource/content identities, firmware and
 PortMaster versions, renderer/settings, map/scene and repeatable duration,

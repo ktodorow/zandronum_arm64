@@ -177,8 +177,9 @@ forced-kill fallback (137); frontend recovered. Retained separately as
 `doom-relaunch-premature-exit.log`, excluded from passed gameplay runs.
 
 Issue #4 input/menu/persistence checks passed with owner's physical checks
-and supporting artifacts. Audio, renderer correctness, performance and full
-single-player milestone acceptance remain later gates.
+and supporting artifacts. Issue #5 [audio checks](r36s-audio.md) subsequently
+passed. Renderer correctness, performance and full single-player milestone
+acceptance remain later gates.
 
 Local evidence: `../zandronum-arm64-artifacts/issue-4/`. Credentials remain
 outside tracked docs and package.

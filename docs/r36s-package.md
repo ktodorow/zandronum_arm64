@@ -1,14 +1,16 @@
 # Personal R36S PortMaster package
 
-Issues [#3](https://github.com/ktodorow/zandronum_arm64/issues/3) and
-[#4](https://github.com/ktodorow/zandronum_arm64/issues/4), branch `r36s`,
+Issues [#3](https://github.com/ktodorow/zandronum_arm64/issues/3),
+[#4](https://github.com/ktodorow/zandronum_arm64/issues/4) and
+[#5](https://github.com/ktodorow/zandronum_arm64/issues/5), branch `r36s`,
 derived from ARM master, including timer fix `a21bcb037`. Scope: native-resolution
-launch, gameplay/menu controls, persistence and frontend recovery. Acceptance follows
+launch, gameplay/menu controls, persistence, audio and frontend recovery. Acceptance follows
 [main specification](specs/zandronum-3.2.1-arm64-r36s.md) and
 [device test workflow](portmaster-testing.md). Owner confirmed visible
 menu/game, Ports-menu launch and working SELECT+START exit on updated build.
 Hardware replay also confirms normal exit and frontend restoration.
 Gameplay profile and persistence scenario: [single-player guide](r36s-single-player.md).
+Audio path, upgrade and listening checks: [audio guide](r36s-audio.md).
 
 ## Build and stage
 
@@ -180,7 +182,9 @@ Failures retain before/after service state and memory in logs. Forced
 runner-death result requires journal from that earlier run; latest recovery
 script additionally records systemd result directly in package log.
 Owner confirmation completes issue #3 launch/exit gate.
-Music initialization warnings occurred; audio qualification remains #5.
+Music initialization failed with inherited FMOD MIDI default during #3.
+Issue #5 subsequently selected OPL/ALSA and passed physical Doom/Doom II
+listening, volume, normal map transitions and relaunch; see [audio evidence](r36s-audio.md).
 
 ### Normal-exit regression
 

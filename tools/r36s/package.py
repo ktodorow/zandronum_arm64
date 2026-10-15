@@ -63,7 +63,7 @@ def main():
         "client_sha256": digest(client / "zandronum"),
         "client_source_provenance": (client / "evidence/source-provenance.txt").read_text(),
         "gl4es_commit": (runtime / "evidence/gl4es-commit.txt").read_text().strip(),
-        "scope": "Issues #3/#4 launch, controls and persistence; see device evidence for qualification",
+        "scope": "Issues #3/#4/#5 launch, controls, persistence and audio; see device evidence for qualification",
     }, indent=2) + "\n")
     files = sorted(p for p in output.rglob("*") if p.is_file())
     (game / "managed-files.sha256").write_text("".join(
