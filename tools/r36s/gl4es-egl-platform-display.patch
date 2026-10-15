@@ -1,0 +1,76 @@
+diff --git a/src/egl/egl.c b/src/egl/egl.c
+index ec1e920..cc86f1c 100644
+--- a/src/egl/egl.c
++++ b/src/egl/egl.c
+@@ -165,13 +165,23 @@ EGLDisplay gl4es_eglGetCurrentDisplay(void) {
+ }
+ 
+ EGLDisplay gl4es_eglGetPlatformDisplay(EGLenum platform, void *native_display, const EGLAttrib *attrib_list) {
+-    LOAD_EGL_EXT(eglGetPlatformDisplay);
+-    if (egl_eglGetPlatformDisplay)
+-        return egl_eglGetPlatformDisplay(platform, native_display, attrib_list);
+-    else {
+-        LOAD_EGL(eglGetDisplay);
+-        return egl_eglGetDisplay((EGLNativeDisplayType)native_display);
+-    }
++    PFNEGLGETPLATFORMDISPLAYPROC core = (PFNEGLGETPLATFORMDISPLAYPROC)proc_address(egl, "eglGetPlatformDisplay");
++    if (core)
++        return core(platform, native_display, attrib_list);
++    /* Core attributes are pointer-sized; EXT attributes are 32-bit on ARM64. */
++    if (attrib_list && attrib_list[0] != EGL_NONE)
++        return EGL_NO_DISPLAY;
++    return gl4es_eglGetPlatformDisplayEXT(platform, native_display, NULL);
++}
++
++EGLDisplay gl4es_eglGetPlatformDisplayEXT(EGLenum platform, void *native_display, const EGLint *attrib_list) {
++    PFNEGLGETPLATFORMDISPLAYEXTPROC ext = (PFNEGLGETPLATFORMDISPLAYEXTPROC)proc_address(egl, "eglGetPlatformDisplayEXT");
++    if (ext)
++        return ext(platform, native_display, attrib_list);
++    if (attrib_list && attrib_list[0] != EGL_NONE)
++        return EGL_NO_DISPLAY;
++    LOAD_EGL(eglGetDisplay);
++    return egl_eglGetDisplay((EGLNativeDisplayType)native_display);
+ }
+ 
+ EGLBoolean gl4es_eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute, EGLint *value) {
+@@ -255,7 +265,7 @@ AliasExport(EGLContext, eglGetCurrentContext,,(void));
+ AliasExport(EGLSurface, eglGetCurrentSurface,,(EGLint readdraw));
+ AliasExport(EGLDisplay, eglGetCurrentDisplay,,(void));
+ AliasExport(EGLDisplay, eglGetPlatformDisplay,, (EGLenum platform, void *native_display, const EGLAttrib *attrib_list));
+-AliasExport(EGLDisplay, eglGetPlatformDisplay, EXT, (EGLenum platform, void *native_display, const EGLAttrib *attrib_list));
++AliasExport(EGLDisplay, eglGetPlatformDisplayEXT,, (EGLenum platform, void *native_display, const EGLint *attrib_list));
+ AliasExport(EGLBoolean, eglQueryContext,,(EGLDisplay dpy, EGLContext ctx, EGLint attribute, EGLint *value));
+ AliasExport(EGLBoolean, eglWaitGL,,(void));
+ AliasExport(EGLBoolean, eglWaitNative,,(EGLint engine));
+@@ -266,4 +276,4 @@ AliasExport(EGLSyncKHR, eglDestroySyncKHR,,(EGLDisplay dpy, EGLSyncKHR sync));
+ AliasExport(EGLint, eglClientWaitSyncKHR,,(EGLDisplay dpy, EGLSyncKHR sync, EGLint flags, EGLTimeKHR timeout));
+ 
+ AliasExport(NativePixmapType, egl_create_pixmap_ID_mapping,,(void *pixmap));
+-AliasExport(NativePixmapType, egl_destroy_pixmap_ID_mapping,,(int id));
+\ No newline at end of file
++AliasExport(NativePixmapType, egl_destroy_pixmap_ID_mapping,,(int id));
+diff --git a/src/egl/egl.h b/src/egl/egl.h
+index c780a2d..1c32956 100644
+--- a/src/egl/egl.h
++++ b/src/egl/egl.h
+@@ -41,6 +41,7 @@ EGLContext gl4es_eglGetCurrentContext(void);
+ EGLSurface gl4es_eglGetCurrentSurface(EGLint readdraw);
+ EGLDisplay gl4es_eglGetCurrentDisplay(void);
+ EGLDisplay gl4es_eglGetPlatformDisplay(EGLenum platform, void *native_display, const EGLAttrib *attrib_list);
++EGLDisplay gl4es_eglGetPlatformDisplayEXT(EGLenum platform, void *native_display, const EGLint *attrib_list);
+ EGLBoolean gl4es_eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute, EGLint *value);
+ EGLBoolean gl4es_eglWaitGL(void);
+ EGLBoolean gl4es_eglWaitNative(EGLint engine);
+diff --git a/src/egl/lookup.c b/src/egl/lookup.c
+index 9421bef..9427ac3 100644
+--- a/src/egl/lookup.c
++++ b/src/egl/lookup.c
+@@ -48,7 +48,7 @@ void* gl4es_eglGetProcAddress(const char *name) {
+     _EX(eglGetCurrentSurface);
+     _EX(eglGetCurrentDisplay);
+     _EX(eglGetPlatformDisplay);
+-    _EXT(eglGetPlatformDisplay);
++    _EX(eglGetPlatformDisplayEXT);
+     _EX(eglQueryContext);
+     _EX(eglWaitGL);
+     _EX(eglWaitNative);

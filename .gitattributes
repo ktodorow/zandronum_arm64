@@ -1,1 +1,3 @@
 source-provenance.txt export-subst
+# Empty unified-diff context lines require a space.
+tools/r36s/*.patch whitespace=-blank-at-eol

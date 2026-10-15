@@ -1,8 +1,10 @@
 # R36S PortMaster test workflow
 
-Status: planned device workflow, documented 2026-10-15. ARM64 client artifacts
-exist; the personal PortMaster launcher/package and device acceptance remain
-to be implemented, starting with [issue #3](https://github.com/ktodorow/zandronum_arm64/issues/3).
+Status: personal launcher/package implemented on `r36s`, 2026-10-15.
+[Package guide and launch evidence](r36s-package.md) record accelerated launch,
+owner display observations, passing SELECT+START hardware replay and owner
+confirmation of working updated build, completing launch/exit gate for
+[issue #3](https://github.com/ktodorow/zandronum_arm64/issues/3).
 The [main specification](specs/zandronum-3.2.1-arm64-r36s.md) defines acceptance;
 the [build guide](arm64-build.md) records completed build-only checks.
 
@@ -13,8 +15,8 @@ defaults. Keep common engine portability fixes on master.
 
 Discover the installed ports directory on the device. The
 [2026-10-14 snapshot](research/r36s-device-snapshot.md) found launchers under
-`/roms2/ports`; the proposed entries are `/roms2/ports/Zandronum.sh` and
-`/roms2/ports/zandronum/`. Finalize paths against the installed helpers in #3.
+`/roms2/ports`; implemented entries are `/roms2/ports/Zandronum.sh` and
+`/roms2/ports/zandronum/`, confirmed against installed helpers in #3.
 
 The game directory will hold the ARM64 executable, matching `zandronum.pk3`,
 `brightmaps.pk3` and `skulltag_actors.pk3`, verified package-private libraries,
@@ -60,8 +62,11 @@ Required launcher sequence for #3:
    verify the service is active and the frontend is usable again. Preserve
    the game's exit status in the log.
 
-This is a required implementation/acceptance step; no stop/start experiment
-or launcher execution was performed during script inspection.
+Device checks confirm detached runner survives ES shutdown and client starts
+with ES stopped. Normal SELECT+START replay, launch failure, handled stop and
+forced game/runner death restore active ES. Owner confirmed working updated
+build after physical launch/chord/frontend check; see
+[current evidence](r36s-package.md#evidence-recorded-2026-10-15).
 
 ## Deploy and test loop
 
@@ -89,18 +94,18 @@ outside repository docs and logs.
 
 ## First device gate: issue #3
 
-- [ ] Launcher uses the installed PortMaster/dArkOS contract and exposes logs.
-- [ ] Detached runner survives ES shutdown; ES is stopped while the client runs.
-- [ ] Normal exit, launch failure and interrupted/crashed game restore an active,
+- [x] Launcher uses the installed PortMaster/dArkOS contract and exposes logs.
+- [x] Detached runner survives ES shutdown; ES is stopped while the client runs.
+- [x] Normal exit, launch failure and interrupted/crashed game restore an active,
   usable EmulationStation frontend; logs record service state and memory.
-- [ ] Investigate accelerated EGL/GLES/gl4es presentation first and record the
+- [x] Investigate accelerated EGL/GLES/gl4es presentation first and record the
   result. A working software path is an acceptable initial fallback.
-- [ ] With an owner-supplied IWAD, visibly present the menu or game at native
+- [x] With an owner-supplied IWAD, visibly present the menu or game at native
   **640×480 internal resolution and display output** on the physical R36S.
-- [ ] Missing IWAD produces an understandable requirement and clean return.
-- [ ] Basic controller exit returns to the frontend without interfering helper
+- [x] Missing IWAD produces an understandable requirement and clean return.
+- [x] Basic controller exit returns to the frontend without interfering helper
   or display state; relaunch works.
-- [ ] Record observed launch, presentation, logs and return for the tested build.
+- [x] Record observed launch, presentation, logs and return for the tested build.
 
 Installed libraries, successful context creation and Docker compilation do not
 complete this gate. Full controller mapping and renderer qualification follow.
