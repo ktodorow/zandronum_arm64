@@ -62,7 +62,8 @@ public:
 		}
 		T * newo=TheFreeList.GetNew();
 
-		*newo=*t;
+		// Lookup compares the full representation, including padding bytes.
+		memcpy(newo, t, sizeof(T));
 		Array.Push(newo);
 		return newo;
 	}

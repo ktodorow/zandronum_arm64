@@ -1042,6 +1042,9 @@ bool P_CheckNodes(MapData * map, bool rebuilt, int buildtime)
 
 typedef TArray<BYTE> MemFile;
 
+// Rebuild caches made before signed node-builder angle conversion was fixed.
+static const char NodeCacheMagic[4] = {'C', 'A', 'C', '2'};
+
 
 static FString CreateCacheName(MapData *map, bool create)
 {
@@ -1158,7 +1161,7 @@ static void CreateCachedNodes(MapData *map)
 	} 
 	while (r == Z_BUF_ERROR);
 
-	memcpy(compressed, "CACH", 4);
+	memcpy(compressed, NodeCacheMagic, 4);
 	DWORD len = LittleLong(numlines);
 	memcpy(compressed+4, &len, 4);
 	map->GetChecksum(compressed+8);
@@ -1190,7 +1193,7 @@ static bool CheckCachedNodes(MapData *map)
 	if (f == NULL) return false;
 
 	if (fread(magic, 1, 4, f) != 4) goto errorout;
-	if (memcmp(magic, "CACH", 4))  goto errorout;
+	if (memcmp(magic, NodeCacheMagic, 4))  goto errorout;
 
 	if (fread(&numlin, 4, 1, f) != 1) goto errorout; 
 	numlin = LittleLong(numlin);
