@@ -11,6 +11,47 @@ minimum5s23.4–23.6FPS. These are measured results, not sustained60/30 guarante
 or proof of hardware ceiling. Broader mod, visual and multiplayer gaps below
 remain recorded; default selection does not close them.
 
+## Default delivery —2026-10-19
+
+Clean source commit `bb0f069ca5275b0c7a459e70c47bb7e0fc17aa53` builds both
+native and fallback clients with identical PK3s. Engine/resource source hashes
+match tested native16 exactly; commit identity accounts for new release export.
+Native SHA256 `d203f654ab22f150995aa90e08ab74f89779df38c5d0197b4f679aaaebae7d90`;
+desktop fallback `ba2ca70c5e8ceca6b77e5cdda7dbddc05c6f4cf2cb15902fbbee109f742234a5`.
+Clean launcher export reproduces installed launcher binary. Both client exports
+and launcher report clean source; package verifies30 managed files.
+
+Actual normal `/roms2/ports/Zandronum.sh` launch confirms GLES default, existing
+MEGA selection/add-on order preserved, one GO-Super controller and clean menu
+cancel/frontend restoration. Default game launch confirms firmware Mali-G31,
+GLES3.2/GLSL3.20, no GL4ES or diagnostic preload, separate native config and
+once-only graphics settings. Actual console save on MAP01, MAP02 transition,
+fresh-process save reload, SELECT+START exit0 and frontend restoration pass.
+`ldd -r` and261 SDL2 required symbols resolve on firmware.
+
+Controller UI regression covers fresh native default, upgrade backup, retained
+content/name/order, untouched named profiles, later software choice and missing
+native fallback. Isolated runner regression covers firmware driver, separate
+base/add-on configs and saves, once-only profile and unchanged legacy settings.
+Both regressions fail against previous default behavior and pass after fix.
+Release-identity4 and frame-analysis6 tests pass. Existing native16 adapter/
+shader5590 checks per GLES2/3.2 driver and PCM/audio evidence remain applicable
+to identical engine sources; no new physical listening/feel claim added.
+
+Owner-requested device cleanup removes202,930,316 bytes of Zandronum test
+package/entry, caches, logs, old archives and temporary diagnostics. Backup and
+verification evidence downloaded and hash-verified on Mac first. All34 current
+settings/save/content files preserve hashes during cleanup; original30 owner
+files checked, allowing only requested launcher renderer change. Test package's
+21 config/save files retained in host backup. All30 managed runtime files still
+verify, GLES remains default and frontend active. No firmware, PortMaster or
+other application files deleted.
+
+Shader cache cleared as requested: next launch recompiles once (cold setup
+measured about44 seconds); warm shader setup measured0.5 seconds. Runtime
+automatically recreates cache/logs. Host exports and private device evidence
+remain outside repository; source excludes access notes and raw captures.
+
 ## Build and package
 
 From clean source worktree, use distinct empty export directories outside
