@@ -45,6 +45,7 @@
 #include "c_cvars.h"
 #include "c_dispatch.h"
 #include "v_palette.h"
+#include "i_system.h"
 
 #include "gl/system/gl_interface.h"
 #include "gl/system/gl_cvars.h"
@@ -55,6 +56,49 @@
 extern TexFilter_s TexFilter[];
 extern int TexFormat[];
 EXTERN_CVAR(Bool, gl_clamp_per_texture)
+
+#ifdef USE_GLES2
+// GLU is not part of GLES. Resample the engine's RGBA upload buffer on the CPU.
+static void ScaleRGBA(const unsigned char *source, int width, int height,
+	unsigned char *target, int targetWidth, int targetHeight)
+{
+	for (int y = 0; y < targetHeight; ++y)
+	{
+		float sy = (y + 0.5f) * height / targetHeight - 0.5f;
+		int y0 = (int)floorf(sy);
+		float fy = sy - y0;
+		int y1 = clamp(y0 + 1, 0, height - 1);
+		y0 = clamp(y0, 0, height - 1);
+		for (int x = 0; x < targetWidth; ++x)
+		{
+			float sx = (x + 0.5f) * width / targetWidth - 0.5f;
+			int x0 = (int)floorf(sx);
+			float fx = sx - x0;
+			int x1 = clamp(x0 + 1, 0, width - 1);
+			x0 = clamp(x0, 0, width - 1);
+			for (int c = 0; c < 4; ++c)
+			{
+				float upper = source[(y0 * width + x0) * 4 + c] * (1.0f - fx)
+					+ source[(y0 * width + x1) * 4 + c] * fx;
+				float lower = source[(y1 * width + x0) * 4 + c] * (1.0f - fx)
+					+ source[(y1 * width + x1) * 4 + c] * fx;
+				target[(y * targetWidth + x) * 4 + c] = (unsigned char)(upper * (1.0f - fy) + lower * fy + 0.5f);
+			}
+		}
+	}
+}
+
+static void SetGLESAnisotropy(float requested)
+{
+	const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+	if (extensions != NULL && strstr(extensions, "GL_EXT_texture_filter_anisotropic") != NULL)
+	{
+		GLfloat maximum = 1.0f;
+		glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maximum);
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, clamp(requested, 1.0f, maximum));
+	}
+}
+#endif
 
 
 //===========================================================================
@@ -91,12 +135,18 @@ int FHardwareTexture::GetTexDimension(int value)
 void FHardwareTexture::LoadImage(unsigned char * buffer,int w, int h, unsigned int & glTexID,int wrapparam, bool alphatexture, int texunit)
 {
 	int rh,rw;
+#ifdef USE_GLES2
+	int texformat = GL_RGBA;
+#else
 	int texformat=TexFormat[gl_texture_format];
+#endif
 	bool deletebuffer=false;
 	bool use_mipmapping = TexFilter[gl_texture_filter].mipmapping;
 
+#ifndef USE_GLES2
 	if (alphatexture) texformat=GL_ALPHA8;
 	else if (forcenocompression) texformat = GL_RGBA8;
+#endif
 	if (glTexID==0) glGenTextures(1,&glTexID);
 	glBindTexture(GL_TEXTURE_2D, glTexID);
 	lastbound[texunit]=glTexID;
@@ -110,7 +160,9 @@ void FHardwareTexture::LoadImage(unsigned char * buffer,int w, int h, unsigned i
 
 		// The texture must at least be initialized if no data is present.
 		mipmap=false;
+#ifndef USE_GLES2
 		glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, false);
+#endif
 		buffer=(unsigned char *)calloc(4,rw * (rh+1));
 		deletebuffer=true;
 		//texheight=-h;	
@@ -120,7 +172,9 @@ void FHardwareTexture::LoadImage(unsigned char * buffer,int w, int h, unsigned i
 		rw = GetTexDimension (w);
 		rh = GetTexDimension (h);
 
+#ifndef USE_GLES2
 		glTexParameteri(GL_TEXTURE_2D, GL_GENERATE_MIPMAP, (mipmap && use_mipmapping && !forcenofiltering));
+#endif
 
 		if (rw == w && rh == h)
 		{
@@ -131,7 +185,11 @@ void FHardwareTexture::LoadImage(unsigned char * buffer,int w, int h, unsigned i
 			unsigned char * scaledbuffer=(unsigned char *)calloc(4,rw * (rh+1));
 			if (scaledbuffer)
 			{
+#ifdef USE_GLES2
+				ScaleRGBA(buffer, w, h, scaledbuffer, rw, rh);
+#else
 				gluScaleImage(GL_RGBA,w, h,GL_UNSIGNED_BYTE,buffer, rw, rh, GL_UNSIGNED_BYTE,scaledbuffer);
+#endif
 				deletebuffer=true;
 				buffer=scaledbuffer;
 			}
@@ -158,7 +216,52 @@ void FHardwareTexture::LoadImage(unsigned char * buffer,int w, int h, unsigned i
 			}
 		}
 	}
-	glTexImage2D(GL_TEXTURE_2D, 0, texformat, rw, rh, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+#ifdef USE_GLES2
+	if (alphatexture)
+	{
+		if (!deletebuffer)
+		{
+			unsigned char *alphaBuffer = (unsigned char *)malloc(4 * rw * rh);
+			if (alphaBuffer == NULL) I_Error("Unable to allocate GLES alpha texture");
+			memcpy(alphaBuffer, buffer, 4 * rw * rh);
+			buffer = alphaBuffer;
+			deletebuffer = true;
+		}
+		for (int p = 0; p < rw * rh; ++p)
+			buffer[p * 4] = buffer[p * 4 + 1] = buffer[p * 4 + 2] = 255;
+	}
+#endif
+#ifdef USE_GLES2
+	if (!alphatexture && !forcenocompression && gl_texture_format > 0 && gl_texture_format <= 3)
+	{
+		unsigned short *packed = (unsigned short *)malloc(2 * rw * rh);
+		if (packed == NULL) I_Error("Unable to allocate GLES packed texture");
+		for (int p = 0; p < rw * rh; ++p)
+		{
+			const unsigned char *rgba = buffer + p * 4;
+			if (gl_texture_format == 1)
+				packed[p] = ((rgba[0] >> 3) << 11) | ((rgba[1] >> 3) << 6)
+					| ((rgba[2] >> 3) << 1) | (rgba[3] >> 7);
+			else if (gl_texture_format == 2)
+				packed[p] = ((rgba[0] >> 4) << 12) | ((rgba[1] >> 4) << 8)
+					| ((rgba[2] >> 4) << 4) | (rgba[3] >> 4);
+			else
+				packed[p] = (((rgba[0] >> 6) * 5) << 12) | (((rgba[1] >> 6) * 5) << 8)
+					| (((rgba[2] >> 6) * 5) << 4) | ((rgba[3] >> 6) * 5);
+		}
+		glTexImage2D(GL_TEXTURE_2D, 0, texformat, rw, rh, 0, GL_RGBA,
+			gl_texture_format == 1 ? GL_UNSIGNED_SHORT_5_5_5_1 : GL_UNSIGNED_SHORT_4_4_4_4, packed);
+		free(packed);
+	}
+	else
+#endif
+	{
+		glTexImage2D(GL_TEXTURE_2D, 0, texformat, rw, rh, 0, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+	}
+#ifdef USE_GLES2
+	if (mipmap && use_mipmapping && !forcenofiltering)
+		glGenerateMipmap(GL_TEXTURE_2D);
+#endif
 
 	if (deletebuffer) free(buffer);
 
@@ -173,7 +276,11 @@ void FHardwareTexture::LoadImage(unsigned char * buffer,int w, int h, unsigned i
 	{
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+#ifdef USE_GLES2
+		SetGLESAnisotropy(1.0f);
+#else
 		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1.f);
+#endif
 	}
 	else
 	{
@@ -182,7 +289,11 @@ void FHardwareTexture::LoadImage(unsigned char * buffer,int w, int h, unsigned i
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, TexFilter[gl_texture_filter].minfilter);
 			if (gl_texture_filter_anisotropic)
 			{
+#ifdef USE_GLES2
+				SetGLESAnisotropy(gl_texture_filter_anisotropic);
+#else
 				glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, gl_texture_filter_anisotropic);
+#endif
 			}
 		}
 		else
@@ -268,6 +379,7 @@ void FHardwareTexture::Clean(bool all)
 	}
 	glTexID_Translated.Clear();
 	if (glDepthID != 0) glDeleteRenderbuffers(1, &glDepthID);
+	glDepthID = 0;
 }
 
 //===========================================================================
@@ -370,6 +482,16 @@ int FHardwareTexture::GetDepthBuffer()
 		{
 			glGenRenderbuffers(1, &glDepthID);
 			glBindRenderbuffer(GL_RENDERBUFFER, glDepthID);
+#ifdef USE_GLES2
+			const char *version = (const char *)glGetString(GL_VERSION);
+			const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+			bool packed = (version != NULL && strstr(version, "OpenGL ES 3") != NULL)
+				|| (extensions != NULL && strstr(extensions, "GL_OES_packed_depth_stencil") != NULL);
+			if (!packed)
+				I_Error("GLES camera textures require OpenGL ES 3 or GL_OES_packed_depth_stencil");
+#endif
+			// Separate depth/stencil objects are not a portable GLES2 framebuffer
+			// combination. Camera views need both for the full portal renderer.
 			glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 
 				GetTexDimension(texwidth), GetTexDimension(texheight));
 			glBindRenderbuffer(GL_RENDERBUFFER, 0);
@@ -391,7 +513,16 @@ void FHardwareTexture::BindToFrameBuffer()
 	if (gl.flags & RFL_FRAMEBUFFER)
 	{
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, glTexID[0], 0);
-		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, GetDepthBuffer()); 
+#ifdef USE_GLES2
+		int depth = GetDepthBuffer();
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, depth);
+		GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+		if (status != GL_FRAMEBUFFER_COMPLETE)
+			I_Error("GLES camera framebuffer is incomplete (0x%x)", status);
+#else
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, GetDepthBuffer());
+#endif
 	}
 }
 

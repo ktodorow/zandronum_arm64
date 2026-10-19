@@ -58,6 +58,12 @@
 #include "gl/textures/gl_material.h"
 
 #include "gl/data/gl_data.h"
+#ifdef USE_GLES2
+#include "gl/shaders/gles_program_cache.h"
+static GLESProgramCache GLESShaderCache;
+static unsigned GLESShaderCount, GLESShaderCacheHits;
+static Uint32 GLESShaderStart, GLESShaderLastProgress;
+#endif
 // these will only have an effect on SM3 cards.
 // For SM4 they are always on and for SM2 always off
 CVAR(Bool, gl_warp_shader, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL)
@@ -65,6 +71,57 @@ CVAR(Bool, gl_fog_shader, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL)
 CVAR(Bool, gl_colormap_shader, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL)
 CVAR(Bool, gl_brightmap_shader, false, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL)
 CVAR(Bool, gl_glow_shader, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG|CVAR_NOINITCALL)
+
+#ifdef USE_GLES2
+// The native backend supplies only the engine's vertex and transform contract.
+// Material shader functions retain the same source on desktop GL and GLES.
+static const char *GLESVertexPrefix =
+	"#version 100\n#define USE_GLES2 1\n"
+	"precision highp float;\nprecision highp int;\n"
+	"attribute vec4 aPosition;\nattribute vec2 aTexCoord;\n"
+	"attribute vec4 aColor;\nattribute vec3 aNormal;\n"
+	"attribute vec3 aGLESSplitData;\nuniform int uGLESPrecomputedSphere, uGLESDepthSplit;\n"
+	"uniform mat4 uProjectionMatrix, uViewMatrix, uModelMatrix, uTextureMatrix;\n"
+	"uniform mat3 uNormalMatrix;\nuniform int uDepthClamp;\n"
+	"varying vec4 vGLESColor, vGLESTexCoord[1], vGLESEyePosition;\n"
+	"#define gl_Vertex aPosition\n#define gl_Color aColor\n"
+	"#define gl_FrontColor vGLESColor\n#define gl_Normal aNormal\n"
+	"#define gl_NormalMatrix uNormalMatrix\n"
+	"#define gl_ModelViewMatrix uViewMatrix\n"
+	"#define gl_ModelViewProjectionMatrix (uProjectionMatrix * uViewMatrix)\n"
+	"#define gl_MultiTexCoord0 vec4(aTexCoord, 0.0, 1.0)\n"
+	"#define gl_TexCoord vGLESTexCoord\n";
+
+static const char *GLESFragmentPrefix =
+	"#version 100\n#define USE_GLES2 1\n"
+	"#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n"
+	"#else\nprecision mediump float;\n#endif\nprecision highp int;\n"
+	"varying vec4 vGLESColor, vGLESTexCoord[1], vGLESEyePosition;\n"
+	"uniform int uAlphaTest, uAlphaFunc, uClipEnabled[6], uClipActive;\n"
+	"uniform float uAlphaThreshold;\nuniform vec4 uClipPlanes[6];\n"
+	"uniform int uTextureEnabled;\n"
+	"#define gl_Color vGLESColor\n#define gl_TexCoord vGLESTexCoord\n"
+	"#define main GLESShaderMain\n";
+
+static const char *GLESFragmentSuffix =
+	"\n#undef main\nvoid main()\n{\n"
+	"#ifndef GLES_OMIT_CLIP_ALPHA\n"
+	"  if (uClipActive != 0) for (int i = 0; i < 6; ++i)\n"
+	"    if (uClipEnabled[i] != 0 && dot(uClipPlanes[i], vGLESEyePosition) < 0.0) discard;\n"
+	"#endif\n"
+	"  GLESShaderMain();\n"
+	"#ifndef GLES_OMIT_CLIP_ALPHA\n"
+	"  if (uAlphaTest != 0) {\n"
+	"    float a = gl_FragColor.a;\n"
+	"    if (uAlphaFunc == 512 ||\n"
+	"        (uAlphaFunc == 513 && !(a < uAlphaThreshold)) ||\n"
+	"        (uAlphaFunc == 514 && !(a == uAlphaThreshold)) ||\n"
+	"        (uAlphaFunc == 515 && !(a <= uAlphaThreshold)) ||\n"
+	"        (uAlphaFunc == 516 && !(a > uAlphaThreshold)) ||\n"
+	"        (uAlphaFunc == 517 && !(a != uAlphaThreshold)) ||\n"
+	"        (uAlphaFunc == 518 && !(a >= uAlphaThreshold))) discard;\n"
+	"  }\n#endif\n}\n";
+#endif
 
 
 extern long gl_frameMS;
@@ -93,13 +150,23 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 
 		FString vp_comb;
 		FString fp_comb;
+#ifdef USE_GLES2
+		vp_comb = GLESVertexPrefix;
+		vp_comb << defines;
+#else
 		vp_comb = defines;
+#endif
 		if (gl.shadermodel < 4) 
 		{
 			vp_comb << "#define NO_SM4\n";
 		}
 
+#ifdef USE_GLES2
+		fp_comb = GLESFragmentPrefix;
+		fp_comb << defines;
+#else
 		fp_comb = vp_comb;
+#endif
 		// This uses GetChars on the strings to get rid of terminating 0 characters.
 		vp_comb << vp_data.GetString().GetChars() << "\n";
 		fp_comb << fp_data.GetString().GetChars() << "\n";
@@ -121,27 +188,47 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 			}
 		}
 
-		hVertProg = glCreateShader(GL_VERTEX_SHADER);
-		hFragProg = glCreateShader(GL_FRAGMENT_SHADER);	
-
-
+#ifdef USE_GLES2
+		fp_comb << GLESFragmentSuffix;
+#endif
 		int vp_size = (int)vp_comb.Len();
 		int fp_size = (int)fp_comb.Len();
 
 		const char *vp_ptr = vp_comb.GetChars();
 		const char *fp_ptr = fp_comb.GetChars();
+		int linked = 0;
+#ifdef USE_GLES2
+		hShader = glCreateProgram();
+		std::string cacheKey = GLESShaderCache.Key(std::string(vp_ptr, vp_size), std::string(fp_ptr, fp_size));
+		bool cached = GLESShaderCache.Load(hShader, cacheKey);
+		if (cached) linked = 1;
+		else
+		{
+			GLESShaderCache.Prepare(hShader);
+#endif
 
+		hVertProg = glCreateShader(GL_VERTEX_SHADER);
+		hFragProg = glCreateShader(GL_FRAGMENT_SHADER);
 		glShaderSource(hVertProg, 1, &vp_ptr, &vp_size);
 		glShaderSource(hFragProg, 1, &fp_ptr, &fp_size);
 
 		glCompileShader(hVertProg);
 		glCompileShader(hFragProg);
 
+#ifndef USE_GLES2
 		hShader = glCreateProgram();
+#endif
 
 		glAttachShader(hShader, hVertProg);
 		glAttachShader(hShader, hFragProg);
 
+#ifdef USE_GLES2
+		glBindAttribLocation(hShader, 0, "aPosition");
+		glBindAttribLocation(hShader, 1, "aTexCoord");
+		glBindAttribLocation(hShader, 2, "aColor");
+		glBindAttribLocation(hShader, 3, "aNormal");
+		glBindAttribLocation(hShader, 7, "aGLESSplitData");
+#endif
 		glBindAttribLocation(hShader, VATTR_GLOWDISTANCE, "glowdistance");
 		glBindAttribLocation(hShader, VATTR_FOGPARAMS, "fogparams");
 		glBindAttribLocation(hShader, VATTR_LIGHTLEVEL, "lightlevel_in"); // Korshun.
@@ -164,13 +251,33 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 		{
 			error << "Linking:\n" << buffer << "\n";
 		}
-		int linked;
+#ifdef USE_GLES2
+		glGetProgramiv(hShader, GL_LINK_STATUS, &linked);
+#else
 		glGetObjectParameteriv(hShader, GL_LINK_STATUS, &linked);
+#endif
 		if (linked == 0)
 		{
 			// only print message if there's an error.
 			Printf("Init Shader '%s':\n%s\n", name, error.GetChars());
+#ifdef USE_GLES2
+			I_Error("Unable to link GLES shader '%s':\n%s", name, error.GetChars());
+#endif
 		}
+#ifdef USE_GLES2
+			GLESShaderCache.Store(hShader, cacheKey);
+		}
+		++GLESShaderCount;
+		if (zandronum_gles_program_label) zandronum_gles_program_label(hShader, name, defines);
+		if (cached) ++GLESShaderCacheHits;
+		Uint32 now = SDL_GetTicks();
+		if (GLESShaderCount % 18 == 0 || now - GLESShaderLastProgress >= 5000)
+		{
+			Printf("Native GLES shaders: %u loaded (%u cached), %.1f seconds; %s\n",
+				GLESShaderCount, GLESShaderCacheHits, (now - GLESShaderStart) / 1000.0, name);
+			GLESShaderLastProgress = now;
+		}
+#endif
 		timer_index = glGetUniformLocation(hShader, "timer");
 		desaturation_index = glGetUniformLocation(hShader, "desaturation_factor");
 		fogenabled_index = glGetUniformLocation(hShader, "fogenabled");
@@ -190,7 +297,7 @@ bool FShader::Load(const char * name, const char * vert_prog_lump, const char * 
 		glUseProgram(hShader);
 
 		int texture_index = glGetUniformLocation(hShader, "texture2");
-		if (texture_index > 0) glUniform1i(texture_index, 1);
+		if (texture_index >= 0) glUniform1i(texture_index, 1);
 
 		glUseProgram(0);
 		return !!linked;
@@ -233,6 +340,9 @@ bool FShader::Bind(float Speed)
 
 FShaderContainer::FShaderContainer(const char *ShaderName, const char *ShaderPath)
 {
+#ifdef USE_GLES2
+	memset(shader_opaque, 0, sizeof(shader_opaque));
+#endif
 	const char * shaderdefines[] = {
 		"#define NO_GLOW\n#define NO_DESATURATE\n",
 		"#define NO_DESATURATE\n",
@@ -326,7 +436,11 @@ FShaderContainer::FShaderContainer(const char *ShaderName, const char *ShaderPat
 						continue;
 					}
 					// this can't be in the shader code due to ATI strangeness.
+#ifdef USE_GLES2
+					str.Format("#define GLES_LIGHT_ARRAY_SIZE %d\n", 2 * gl.MaxLights());
+#else
 					str = "#version 120\n#extension GL_EXT_gpu_shader4 : enable\n";
+#endif
 					if (gl.MaxLights() == 128) str += "#define MAXLIGHTS128\n";
 				}
 				if ((i&8) == 0)
@@ -344,6 +458,28 @@ FShaderContainer::FShaderContainer(const char *ShaderName, const char *ShaderPat
 					delete shader[i];
 					shader[i] = NULL;
 				}
+#ifdef USE_GLES2
+				// Measured Default families only. Reuse exact material definitions,
+				// Base retains full capacity; measured index4 child fits eight lights.
+				if (!strcmp(ShaderName,"Default") && !strcmp(ShaderPath,"shaders/glsl/func_normal.fp") &&
+					(i == 0 || i == 4 || i == 6) && shader[i])
+				{
+					FString opaqueName = name, opaqueDefines = str;
+					opaqueName << "::noclip-noalpha";
+					unsigned lightVec4Limit=i==4?unsigned(gl.MaxLights()<8?2*gl.MaxLights():16):0;
+					if(lightVec4Limit)
+					{
+						opaqueName << "::lights8";
+						opaqueDefines.AppendFormat("#undef GLES_LIGHT_ARRAY_SIZE\n#define GLES_LIGHT_ARRAY_SIZE %u\n",lightVec4Limit);
+					}
+					opaqueDefines << "#define GLES_OMIT_CLIP_ALPHA\n";
+					shader_opaque[i] = new FShader;
+					if (!shader_opaque[i]->Load(opaqueName, "shaders/glsl/main.vp",
+						"shaders/glsl/main.fp", ShaderPath, opaqueDefines))
+						I_Error("Unable to load native GLES Default specialization");
+					gles::RegisterNoClipAlphaVariant(shader[i]->GetHandle(),shader_opaque[i]->GetHandle(),lightVec4Limit);
+				}
+#endif
 			}
 			catch(CRecoverableError &err)
 			{
@@ -362,6 +498,10 @@ FShaderContainer::FShaderContainer(const char *ShaderName, const char *ShaderPat
 //==========================================================================
 FShaderContainer::~FShaderContainer()
 {
+#ifdef USE_GLES2
+	for (int i = 0; i < NUM_SHADERS; ++i)
+		if (shader_opaque[i]) delete shader_opaque[i];
+#endif
 	if (shader_cm != NULL) delete shader_cm;
 	if (shader_fl != NULL) delete shader_fl;
 	for (int i = 0; i < NUM_SHADERS; i++)
@@ -516,6 +656,12 @@ void FShaderManager::Recompile()
 
 void FShaderManager::CompileShaders()
 {
+#ifdef USE_GLES2
+	GLESShaderCount = GLESShaderCacheHits = 0;
+	GLESShaderStart = GLESShaderLastProgress = SDL_GetTicks();
+	GLESShaderCache.Initialize(SDL_GL_GetProcAddress, getenv("ZANDRONUM_GLES_CACHE"));
+	Printf("Native GLES shaders: warming all material variants; binary cache %s\n", GLESShaderCache.Active() ? "enabled" : "unavailable");
+#endif
 	mActiveShader = mEffectShaders[0] = mEffectShaders[1] = NULL;
 	if (gl.shadermodel > 0)
 	{
@@ -552,6 +698,10 @@ void FShaderManager::CompileShaders()
 			}
 		}
 	}
+#ifdef USE_GLES2
+	Printf("Native GLES shaders ready: %u programs, %u cached, %u compiled, %.1f seconds\n",
+		GLESShaderCount, GLESShaderCacheHits, GLESShaderCount - GLESShaderCacheHits, (SDL_GetTicks() - GLESShaderStart) / 1000.0);
+#endif
 }
 
 //==========================================================================

@@ -202,6 +202,84 @@ class OpenALSoundStream : public SoundStream
     bool Looping;
     ALfloat Volume;
 
+#ifdef USE_GLES2
+    PreparedSoundSource *Prepared;
+    unsigned Pending[BufferCount], PendingHead, PendingCount, PendingAudio;
+    bool AsyncActive, AsyncPaused, AsyncStarved;
+    unsigned AsyncUnderruns;
+
+    void StopPrepared()
+    {
+        if(Prepared) Prepared->Stop();
+        AsyncActive = false;
+        PendingHead = PendingCount = PendingAudio = 0;
+        AsyncStarved = false;
+    }
+
+    void CollectPrepared()
+    {
+        while(PendingCount)
+        {
+            unsigned slot = Pending[PendingHead];
+            const void *pcm = NULL;
+            bool valid = false;
+            if(!Prepared->Collect(slot, pcm, valid)) break;
+            PendingHead = (PendingHead+1)%BufferCount;
+            --PendingCount;
+            if(valid)
+            {
+                --PendingAudio;
+                alBufferData(Buffers[slot], Format, pcm, Data.Size(), SampleRate);
+                alSourceQueueBuffers(Source, 1, &Buffers[slot]);
+            }
+        }
+    }
+
+    bool ProcessPrepared(ALint processed)
+    {
+        // Query/unqueue old processed buffers before queuing ready PCM. On a
+        // stopped AL source, newly queued buffers otherwise appear processed.
+        while(processed-- > 0)
+        {
+            ALuint buffer = 0;
+            alSourceUnqueueBuffers(Source, 1, &buffer);
+            if(getALError() != AL_NO_ERROR) { Playing = false; return true; }
+            unsigned slot = 0;
+            while(slot < BufferCount && Buffers[slot] != buffer) ++slot;
+            if(slot == BufferCount || PendingCount == BufferCount)
+            {
+                Playing = false;
+                return true;
+            }
+            void *pcm = Prepared->Prepare(slot);
+            bool valid = Callback(this, pcm, Data.Size(), UserData);
+            Prepared->Submit(slot, valid);
+            Pending[(PendingHead+PendingCount++)%BufferCount] = slot;
+            if(valid) ++PendingAudio;
+        }
+        CollectPrepared();
+        ALint queued = 0, state = AL_STOPPED;
+        alGetSourcei(Source, AL_BUFFERS_QUEUED, &queued);
+        alGetSourcei(Source, AL_SOURCE_STATE, &state);
+        Playing = getALError() == AL_NO_ERROR && (queued > 0 || PendingCount > 0);
+        if(Playing && !AsyncPaused && state != AL_PLAYING && state != AL_PAUSED)
+        {
+            if((queued > 0 || PendingAudio > 0) && !AsyncStarved)
+            {
+                ++AsyncUnderruns;
+                AsyncStarved = true;
+            }
+            if(queued > 0)
+            {
+                alSourcePlay(Source);
+                Playing = getALError() == AL_NO_ERROR;
+                if(Playing) AsyncStarved = false;
+            }
+        }
+        return !Playing;
+    }
+#endif
+
 
     FileReader *Reader;
     SoundDecoder *Decoder;
@@ -262,12 +340,20 @@ public:
     OpenALSoundStream(OpenALSoundRenderer *renderer)
       : Renderer(renderer), Source(0), Playing(false), Looping(false), Volume(1.0f), Reader(NULL), Decoder(NULL)
     {
+#ifdef USE_GLES2
+        Prepared = NULL;
+        PendingHead = PendingCount = PendingAudio = AsyncUnderruns = 0;
+        AsyncActive = AsyncPaused = AsyncStarved = false;
+#endif
         Renderer->Streams.Push(this);
         memset(Buffers, 0, sizeof(Buffers));
     }
 
     virtual ~OpenALSoundStream()
     {
+#ifdef USE_GLES2
+        StopPrepared();
+#endif
         if(Source)
         {
             alSourceRewind(Source);
@@ -299,6 +385,12 @@ public:
         if(Playing)
             return true;
 
+#ifdef USE_GLES2
+        StopPrepared();
+        AsyncPaused = false;
+        AsyncUnderruns = 0;
+#endif
+
         /* Clear the buffer queue, then fill and queue each buffer */
         alSourcei(Source, AL_BUFFER, 0);
         for(int i = 0;i < BufferCount;i++)
@@ -319,11 +411,18 @@ public:
         alSourcePlay(Source);
         Playing = (getALError()==AL_NO_ERROR);
 
+#ifdef USE_GLES2
+        if(Playing && Prepared) AsyncActive = Prepared->Start(Data.Size());
+#endif
+
         return Playing;
     }
 
     virtual void Stop()
     {
+#ifdef USE_GLES2
+        StopPrepared();
+#endif
         if(!Playing)
             return;
 
@@ -352,7 +451,11 @@ public:
             alSourcePause(Source);
         else
             alSourcePlay(Source);
-        return (getALError()==AL_NO_ERROR);
+        bool ok = getALError()==AL_NO_ERROR;
+#ifdef USE_GLES2
+        if(ok) AsyncPaused = pause;
+#endif
+        return ok;
     }
 
     virtual bool SetPosition(unsigned int ms_pos)
@@ -402,6 +505,10 @@ public:
         if(!Playing)
             return true;
 
+#ifdef USE_GLES2
+        if(AsyncActive) return ProcessPrepared(processed);
+#endif
+
         // For each processed buffer in the queue...
         while(processed > 0)
         {
@@ -438,6 +545,16 @@ public:
         return !Playing;
     }
 
+#ifdef USE_GLES2
+    virtual bool SetPreparedSource(PreparedSoundSource *source)
+    {
+        if(Playing || Prepared || Decoder || Data.Size() != 28408 ||
+           SampleRate != 49716 || Format != AL_FORMAT_STEREO_FLOAT32) return false;
+        Prepared = source;
+        return true;
+    }
+#endif
+
     FString GetStats()
     {
         FString stats;
@@ -463,6 +580,16 @@ public:
 
         stats = (state == AL_INITIAL) ? "Buffering" : (state == AL_STOPPED) ? "Underrun" :
                 (state == AL_PLAYING || state == AL_PAUSED) ? "Ready" : "Unknown state";
+
+        if(Decoder == NULL)
+        {
+#ifdef USE_GLES2
+            if(Prepared) stats.AppendFormat(", OPL worker %s, pending %u, underruns %u",
+                (AsyncActive && Prepared->UsesWorker()) ? "active" : "inactive", PendingCount, AsyncUnderruns);
+#endif
+            stats.AppendFormat(", %uHz", SampleRate);
+            return stats;
+        }
 
         pos = Decoder->getSampleOffset();
         len = Decoder->getSampleLength();

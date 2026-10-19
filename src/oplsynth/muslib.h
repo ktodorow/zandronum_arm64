@@ -183,11 +183,13 @@ struct OPLio {
 	virtual void	OPLwriteReg(int which, uint reg, uchar data);
 	virtual void	SetClockRate(double samples_per_tick);
 	virtual void	WriteDelay(int ticks);
+	virtual bool SupportsPreparedPCM() const { return EmulatorCore == 1 && IsOPL3 && NumChips != 0; }
 
 	class OPLEmul *chips[MAXOPL2CHIPS];
 	uint OPLchannels;
 	uint NumChips;
 	bool IsOPL3;
+	int EmulatorCore;
 };
 
 struct DiskWriterIO : public OPLio
@@ -200,6 +202,7 @@ struct DiskWriterIO : public OPLio
 	void OPLwriteReg(int which, uint reg, uchar data);
 	void SetClockRate(double samples_per_tick);
 	void WriteDelay(int ticks);
+	bool SupportsPreparedPCM() const { return false; }
 
 	void SetChip(int chipnum);
 

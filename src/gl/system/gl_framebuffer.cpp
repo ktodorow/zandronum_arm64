@@ -55,6 +55,9 @@
 #include "gl/system/gl_framebuffer.h"
 #include "gl/renderer/gl_renderer.h"
 #include "gl/renderer/gl_lightdata.h"
+#ifdef USE_GLES2
+#include "gl/renderer/gl_renderstate.h"
+#endif
 #include "gl/data/gl_data.h"
 #include "gl/textures/gl_hwtexture.h"
 #include "gl/textures/gl_texture.h"
@@ -106,6 +109,9 @@ OpenGLFrameBuffer::~OpenGLFrameBuffer()
 {
 	delete GLRenderer;
 	GLRenderer = NULL;
+#ifdef USE_GLES2
+	gles::Shutdown();
+#endif
 }
 
 //==========================================================================
@@ -165,6 +171,12 @@ void OpenGLFrameBuffer::InitializeState()
 	glHint(GL_FOG_HINT, GL_FASTEST);
 	glFogi(GL_FOG_MODE, GL_EXP);
 
+#ifdef USE_GLES2
+	// Each new context starts with fresh desired state and invalid applied
+	// caches; raw initialization above must not leave old-context shadows.
+	gl_RenderState.Reset();
+	gl_RenderState.ApplyPipelineState();
+#endif
 
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -225,7 +237,11 @@ void OpenGLFrameBuffer::Swap()
 {
 	Finish.Reset();
 	Finish.Clock();
+#ifdef USE_GLES2
+	gles::Flush();
+#else
 	glFinish();
+#endif
 	if (needsetgamma) 
 	{
 		//DoSetGamma();

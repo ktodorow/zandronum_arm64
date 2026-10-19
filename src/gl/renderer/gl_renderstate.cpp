@@ -55,7 +55,11 @@ void gl_SetTextureMode(int type);
 FRenderState gl_RenderState;
 int FStateAttr::ChangeCounter;
 
+#ifdef USE_GLES2
+CVAR(Bool, gl_direct_state_change, false, 0)
+#else
 CVAR(Bool, gl_direct_state_change, true, 0)
+#endif
 
 
 //==========================================================================
@@ -79,8 +83,13 @@ void FRenderState::Reset()
 	glAlphaFunc = -1;
 	mAlphaFunc = GL_GEQUAL;
 	mAlphaThreshold = 0.5f;
+	mAlphaTest = true;
+	glAlphaTest = false;
 	mBlendEquation = GL_FUNC_ADD;
 	glBlendEquation = -1;
+#ifdef USE_GLES2
+	mPipelineStateValid = false;
+#endif
 	m2D = true;
 }
 
@@ -266,8 +275,47 @@ bool FRenderState::ApplyShader()
 //
 //==========================================================================
 
+#ifdef USE_GLES2
+void FRenderState::ApplyPipelineState()
+{
+	// Desired and applied state share both cvar modes. Eager setters also use
+	// this path, so switching modes cannot resurrect an older cached value.
+	if (!mPipelineStateValid || mSrcBlend != glSrcBlend || mDstBlend != glDstBlend)
+	{
+		glBlendFunc(mSrcBlend, mDstBlend);
+		glSrcBlend = mSrcBlend;
+		glDstBlend = mDstBlend;
+	}
+	if (!mPipelineStateValid || mAlphaFunc != glAlphaFunc || mAlphaThreshold != glAlphaThreshold)
+	{
+		::glAlphaFunc(mAlphaFunc, mAlphaThreshold);
+		glAlphaFunc = mAlphaFunc;
+		glAlphaThreshold = mAlphaThreshold;
+	}
+	if (!mPipelineStateValid || mAlphaTest != glAlphaTest)
+	{
+		if (mAlphaTest) glEnable(GL_ALPHA_TEST);
+		else glDisable(GL_ALPHA_TEST);
+		glAlphaTest = mAlphaTest;
+	}
+	if (!mPipelineStateValid || mBlendEquation != glBlendEquation)
+	{
+		::glBlendEquation(mBlendEquation);
+		glBlendEquation = mBlendEquation;
+	}
+	mPipelineStateValid = true;
+}
+#endif
+
 void FRenderState::Apply(bool forcenoshader)
 {
+#ifdef USE_GLES2
+	ApplyPipelineState();
+	// Material shaders and the backend's 2D shader share the texture-enable
+	// uniform; keep it current even when the fixed-function branch is skipped.
+	if (mTextureEnabled) glEnable(GL_TEXTURE_2D);
+	else glDisable(GL_TEXTURE_2D);
+#else
 	if (!gl_direct_state_change)
 	{
 		if (mSrcBlend != glSrcBlend || mDstBlend != glDstBlend)
@@ -280,7 +328,7 @@ void FRenderState::Apply(bool forcenoshader)
 		{
 			glAlphaFunc = mAlphaFunc;
 			glAlphaThreshold = mAlphaThreshold;
-			::glBlendFunc(mAlphaFunc, mAlphaThreshold);
+			::glAlphaFunc(mAlphaFunc, mAlphaThreshold);
 		}
 		if (mAlphaTest != glAlphaTest)
 		{
@@ -294,6 +342,7 @@ void FRenderState::Apply(bool forcenoshader)
 			::glBlendEquation(mBlendEquation);
 		}
 	}
+#endif
 
 	if (forcenoshader || !ApplyShader())
 	{

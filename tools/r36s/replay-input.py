@@ -58,6 +58,7 @@ def main():
     parser.add_argument('controls', nargs='*')
     parser.add_argument('--joystick', type=Path, default=Path('/dev/input/js0'))
     parser.add_argument('--mapping', type=Path, default=Path('/tmp/gamecontrollerdb.txt'))
+    parser.add_argument('--client', choices=('zandronum', 'zandronum-gles'), default='zandronum')
     parser.add_argument('--hold', type=float, default=0.1)
     parser.add_argument('--gap', type=float, default=0.2)
     parser.add_argument('--chord', action='store_true')
@@ -68,7 +69,7 @@ def main():
     print(json.dumps(info, indent=2), flush=True)
     if not args.controls:
         return
-    game = subprocess.run(['pgrep', '-x', 'zandronum'], text=True,
+    game = subprocess.run(['pgrep', '-x', args.client], text=True,
                           stdout=subprocess.PIPE).stdout.strip()
     if not game.isdigit() or 'zandronum-r36s.service' not in Path(f'/proc/{game}/cgroup').read_text():
         parser.error('replay requires one running client in packaged systemd unit')

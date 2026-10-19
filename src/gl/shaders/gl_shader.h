@@ -7,9 +7,15 @@
 
 extern bool gl_shaderactive;
 
+#ifdef USE_GLES2
+const int VATTR_GLOWDISTANCE = 4;
+const int VATTR_FOGPARAMS = 5;
+const int VATTR_LIGHTLEVEL = 6;
+#else
 const int VATTR_GLOWDISTANCE = 15;
 const int VATTR_FOGPARAMS = 14;
 const int VATTR_LIGHTLEVEL = 13; // Korshun.
+#endif
 
 //==========================================================================
 //
@@ -106,6 +112,9 @@ class FShaderContainer
 	FShader *shader[NUM_SHADERS];
 	FShader *shader_cm;	// the shader for fullscreen colormaps
 	FShader *shader_fl;	// the shader for the fog layer
+#ifdef USE_GLES2
+	FShader *shader_opaque[NUM_SHADERS]; // Measured Default variants; generic owns logical state.
+#endif
 
 public:
 	FShaderContainer(const char *ShaderName, const char *ShaderPath);

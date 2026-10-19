@@ -1,3 +1,4 @@
+#ifndef USE_GLES2
 #if defined(__unix__) || defined(__APPLE__)
 #define APIENTRY
 #define APIENTRYP *
@@ -98,3 +99,4 @@ __EXTERN PFNGLFRAMEBUFFERRENDERBUFFERPROC glFramebufferRenderbuffer;
 __EXTERN PFNGLTEXBUFFERARBPROC glTexBufferARB;
 
 #undef __EXTERN
+#endif // !USE_GLES2: core entry points link directly to libGLESv2.

@@ -473,7 +473,6 @@ void DBOPL::Reset() {
 
 	int_samplerate = samplerate;
 
-	generator_add = (Bit32u)(INTFREQU*FIXEDPT/int_samplerate);
 
 
 	memset((void *)adlibreg,0,sizeof(adlibreg));

@@ -21,7 +21,11 @@ void main()
 
 	#ifndef NO_SM4
 		// Yes, I know... But using a texture matrix here saves me from the hassle of tracking its state across shaders. ;)
-		vec4 worldcoord = gl_TextureMatrix[7] * gl_Vertex;
+		#ifdef USE_GLES2
+			vec4 worldcoord = uModelMatrix * gl_Vertex;
+		#else
+			vec4 worldcoord = gl_TextureMatrix[7] * gl_Vertex;
+		#endif
 	#else
 		vec4 worldcoord = gl_Vertex;
 	#endif
@@ -45,11 +49,19 @@ void main()
 		vec3 r = reflect(u, n);
 		float m = 2.0 * sqrt( r.x*r.x + r.y*r.y + (r.z+1.0)*(r.z+1.0) );
 		vec2 sst = vec2(r.x/m + 0.5,  r.y/m + 0.5);
+		#ifdef USE_GLES2
+			// CPU depth-plane splitting must interpolate original shader outputs.
+			if (uGLESPrecomputedSphere != 0) sst = aGLESSplitData.xy;
+		#endif
 	#endif
 	
 	
 	#ifndef SPHEREMAP_0
-		gl_TexCoord[0] = gl_TextureMatrix[0] * gl_MultiTexCoord0;
+		#ifdef USE_GLES2
+			gl_TexCoord[0] = uTextureMatrix * gl_MultiTexCoord0;
+		#else
+			gl_TexCoord[0] = gl_TextureMatrix[0] * gl_MultiTexCoord0;
+		#endif
 	#else
 		gl_TexCoord[0].xy = sst;
 	#endif
@@ -72,4 +84,14 @@ void main()
     #ifdef __GLSL_CG_DATA_TYPES
 		gl_ClipVertex = eyeCoordPos;
 	#endif
+#ifdef USE_GLES2
+	vGLESEyePosition = eyeCoordPos;
+	if (uDepthClamp != 0)
+	{
+		if (uGLESDepthSplit != 0 && aGLESSplitData.z != 0.0)
+			gl_Position.z = aGLESSplitData.z * gl_Position.w;
+		else
+			gl_Position.z = clamp(gl_Position.z, -gl_Position.w, gl_Position.w);
+	}
+#endif
 }

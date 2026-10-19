@@ -27,6 +27,7 @@ class App {
     fs::path state, output;
     std::vector<fs::path> roots;
     std::string default_renderer, capture;
+    bool has_gles;
     Library library;
     Profile profile;
     std::vector<fs::path> profiles;
@@ -94,7 +95,7 @@ class App {
                 {"BASE GAME", profile.iwad.empty() ? "Choose WAD / PK3" : profile.iwad.filename().string(), profile.iwad.string()},
                 {"ADD-ONS", std::to_string(profile.addons.size()) + " selected", "Select WAD and PK3 files"},
                 {"LOAD ORDER", "Top to bottom", "Later add-ons can override earlier files"},
-                {"RENDERER", profile.renderer == "software" ? "Software" : "GL4ES", "Software passes native-30 baseline; GL4ES has higher peaks"},
+                {"RENDERER", profile.renderer == "gles" ? "Native GLES" : profile.renderer == "software" ? "Software" : "GL4ES", "Select graphics renderer; each keeps separate saves"},
                 {"PROFILES", profile.id.empty() ? "Unsaved" : "Saved", "Save or load named combinations"},
                 {"EXIT", "Ports menu", "Return to frontend"}};
         case View::Iwads:
@@ -113,8 +114,10 @@ class App {
                 items.push_back({std::to_string(i + 1) + ". " + profile.addons[i].filename().string(), "", profile.addons[i].string()});
             break;
         case View::Renderer:
-            return {{"GL4ES", "Higher peaks", "Existing GL saves remain available with GL4ES"},
+            items = {{"GL4ES", "Higher peaks", "Existing GL saves remain available with GL4ES"},
                 {"SOFTWARE", "Native-30 tested", "Software saves remain separate from GL saves"}};
+            if (has_gles) items.push_back({"NATIVE GLES", "GPU renderer", "Native GLES keeps its own saves"});
+            return items;
         case View::Profiles:
             items = {{"SAVE CURRENT", "", "Update current named profile"},
                 {"SAVE AS NEW", "", "Keep existing profile and save another combination"},
@@ -262,13 +265,13 @@ class App {
                 else if (cursor == 1) change(View::Iwads);
                 else if (cursor == 2) change(View::Addons);
                 else if (cursor == 3) change(View::Order);
-                else if (cursor == 4) { change(View::Renderer); cursor = profile.renderer == "software" ? 1 : 0; }
+                else if (cursor == 4) { change(View::Renderer); cursor = profile.renderer == "gles" && has_gles ? 2 : profile.renderer == "software" ? 1 : 0; }
                 else if (cursor == 5) { scan_profiles(); change(View::Profiles); }
                 else { persist_last(); finished = true; }
                 break;
             case View::Iwads: select_base(profile,library.bases[cursor]); change(View::Home); break;
             case View::Addons: toggle_addon(profile,library.addons[cursor]); break;
-            case View::Renderer: profile.renderer = cursor == 0 ? "gl4es" : "software"; change(View::Home); break;
+            case View::Renderer: profile.renderer = cursor == 2 && has_gles ? "gles" : cursor == 1 ? "software" : "gl4es"; change(View::Home); break;
             case View::Profiles:
                 if (cursor < 2) begin_name(cursor == 1);
                 else if (cursor == 2) { profile = initial_profile(library,default_renderer); change(View::Home); }
@@ -358,8 +361,9 @@ class App {
 public:
     App(fs::path game, std::vector<fs::path> content_roots, fs::path selection, std::string preferred, std::string screenshot)
         : state(game/"config/launcher"), output(std::move(selection)), roots(std::move(content_roots)),
-          default_renderer(std::move(preferred)), capture(std::move(screenshot))
+          default_renderer(std::move(preferred)), capture(std::move(screenshot)), has_gles(fs::is_regular_file(game/"zandronum-gles"))
     {
+        if (default_renderer.empty()) default_renderer = has_gles ? "gles" : "gl4es";
         roots.push_back(game/"iwads"); roots.push_back(game/"mods");
         std::ifstream paths(state/"paths.txt");
         for (std::string line; std::getline(paths,line);)
@@ -371,6 +375,17 @@ public:
             catch (const std::exception &error) { status = "Last selection could not load; choose again"; std::cerr << error.what() << '\n'; }
         }
         scan_profiles();
+        if (has_gles && default_renderer == "gles" && !fs::exists(state/"gles-default-v1")) {
+            if (fs::exists(state/"last.profile") && !fs::exists(state/"last.before-gles-v1.profile"))
+                fs::copy_file(state/"last.profile",state/"last.before-gles-v1.profile");
+            profile.renderer = "gles";
+            write_profile(state/"last.profile",profile);
+            std::ofstream marker(state/"gles-default-v1");
+            marker << "1\n";
+            marker.close();
+            if (!marker) throw std::runtime_error("Could not save native GLES default");
+        }
+        if (!has_gles && profile.renderer == "gles") profile.renderer = "gl4es";
     }
     ~App()
     {
@@ -425,11 +440,11 @@ int main(int argc, char **argv)
     try {
         fs::path game, selection;
         std::vector<fs::path> roots;
-        std::string renderer = "gl4es", capture;
+        std::string renderer, capture;
         for (int i = 1; i < argc; ++i) {
             const std::string argument = argv[i];
             if (argument == "--help") {
-                std::cout << "r36s-launcher --game-dir PATH --output PATH [--content-root PATH] [--renderer gl4es|software] [--capture BMP]\n";
+                std::cout << "r36s-launcher --game-dir PATH --output PATH [--content-root PATH] [--renderer gles|gl4es|software] [--capture BMP]\n";
                 return 0;
             }
             if (++i == argc) throw std::runtime_error("Missing option value");
@@ -440,7 +455,7 @@ int main(int argc, char **argv)
             else if (argument == "--capture") capture = argv[i];
             else throw std::runtime_error("Unknown option: " + argument);
         }
-        if (game.empty() || selection.empty() || (renderer != "gl4es" && renderer != "software"))
+        if (game.empty() || selection.empty() || (!renderer.empty() && renderer != "gles" && renderer != "gl4es" && renderer != "software"))
             throw std::runtime_error("Specify game directory, selection output and valid renderer");
         return App(game,std::move(roots),selection,renderer,capture).run();
     } catch (const std::exception &error) {

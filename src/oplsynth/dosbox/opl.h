@@ -228,4 +228,6 @@ public:
 	DBOPL(bool stereo);
 };
 
-static Bit32u generator_add;	// should be a chip parameter
+// Engine always renders at OPL_SAMPLE_RATE. Keep shared envelope increment
+// immutable: resetting one chip must not race synthesis on another instance.
+static const Bit32u generator_add = (Bit32u)(INTFREQU*FIXEDPT/(Bit32u)OPL_SAMPLE_RATE);

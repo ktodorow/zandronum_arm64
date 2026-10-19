@@ -2,6 +2,11 @@
 cmake_minimum_required( VERSION 3.5 )
 project(Zandronum)
 
+option( ZANDRONUM_USE_GLES "Build native OpenGL ES 2 renderer with SDL on Linux" OFF )
+if( ZANDRONUM_USE_GLES AND ( WIN32 OR APPLE ) )
+	message( FATAL_ERROR "Native GLES currently requires the Linux SDL backend." )
+endif()
+
 if( COMMAND cmake_policy )
 	cmake_policy( SET CMP0011 NEW )
 	cmake_policy( SET CMP0054 NEW )
@@ -75,7 +80,12 @@ IF( NOT CMAKE_BUILD_TYPE )
 ENDIF( NOT CMAKE_BUILD_TYPE )
 
 set( ZDOOM_OUTPUT_DIR ${CMAKE_BINARY_DIR} CACHE PATH "Directory where zdoom.pk3 and the executable will be created." )
-set( ZDOOM_EXE_NAME "zandronum" CACHE FILEPATH "Name of the executable to create" )
+if( ZANDRONUM_USE_GLES )
+	set( ZDOOM_DEFAULT_EXE_NAME "zandronum-gles" )
+else()
+	set( ZDOOM_DEFAULT_EXE_NAME "zandronum" )
+endif()
+set( ZDOOM_EXE_NAME "${ZDOOM_DEFAULT_EXE_NAME}" CACHE FILEPATH "Name of the executable to create" )
 if( MSVC )
 	# Allow the user to use ZDOOM_OUTPUT_DIR as a single release point.
 	# Use zdoom, zdoomd, zdoom64, and zdoomd64 for the binary names

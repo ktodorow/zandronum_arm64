@@ -165,6 +165,25 @@ struct FDynLightData
 
 	void Combine(int *siz, int max)
 	{
+#ifdef USE_GLES2
+		// Native MaxLights counts lights, each stored as two vec4 uniforms.
+		// Keep complete records and original modulated/subtractive/additive order.
+		// gl_GetLight appends exactly eight floats to each category per light.
+		unsigned int available = max > 0 ? unsigned(max) * 8 : 0;
+		unsigned int counts[3], total = 0;
+		for (int i = 0; i < 3; ++i)
+		{
+			counts[i] = arrays[i].Size() < available ? arrays[i].Size() : available;
+			available -= counts[i];
+			total += counts[i];
+			siz[i] = total / 4;
+		}
+		arrays[0].Resize(total);
+		if (counts[1] != 0)
+			memcpy(&arrays[0][counts[0]], &arrays[1][0], counts[1] * sizeof(float));
+		if (counts[2] != 0)
+			memcpy(&arrays[0][counts[0] + counts[1]], &arrays[2][0], counts[2] * sizeof(float));
+#else
 		siz[0] = arrays[0].Size();
 		siz[1] = siz[0] + arrays[1].Size();
 		siz[2] = siz[1] + arrays[2].Size();
@@ -177,8 +196,17 @@ struct FDynLightData
 		if (siz[0] > max) siz[0] = max;
 		if (siz[1] > max) siz[1] = max;
 		if (siz[2] > max) siz[2] = max;
+#endif
 	}
 };
+
+#ifdef USE_GLES2
+inline bool gl_ForceMultipassLights(bool forced, bool shaderLights)
+{
+	// Shader-light rendering never draws the multipass-only light lists.
+	return forced && !shaderLights;
+}
+#endif
 
 // [AK] Override gl_lights_size in the same way as gl_fogmode.
 #define OVERRIDE_LIGHTS_SIZE_IF_NECESSARY \

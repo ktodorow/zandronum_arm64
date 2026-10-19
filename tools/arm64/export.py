@@ -22,17 +22,19 @@ def main():
     OUT.mkdir()
     evidence = OUT / 'evidence'
     evidence.mkdir()
-    binary = BUILD / 'zandronum'
+    cache = (BUILD / 'CMakeCache.txt').read_text()
+    native_gles = 'ZANDRONUM_USE_GLES:BOOL=ON' in cache
+    executable = 'zandronum-gles' if native_gles else 'zandronum'
+    binary = BUILD / executable
     header = command('readelf', '-h', str(binary))
     assert 'AArch64' in header, header
     commands = json.loads((BUILD / 'compile_commands.json').read_text())
     assert commands and all('-march=armv8-a' in item['command'] for item in commands)
     assert not any(re.search(r'-march=native|-mcpu=native|-marm|-mfpu=|-mfloat-abi=|SERVER_ONLY', item['command']) for item in commands)
     assert any('oalsound.cpp' in item['file'] for item in commands)
-    cache = (BUILD / 'CMakeCache.txt').read_text()
     for setting in ('SERVERONLY:BOOL=OFF', 'NO_SOUND:BOOL=OFF', 'USE_OPENAL:BOOL=ON', 'NO_GL:BOOL=OFF'):
         assert setting in cache, setting
-    for name in ('zandronum', 'zandronum.debug', 'zandronum.pk3', 'brightmaps.pk3', 'skulltag_actors.pk3'):
+    for name in (executable, executable + '.debug', 'zandronum.pk3', 'brightmaps.pk3', 'skulltag_actors.pk3'):
         shutil.copy2(BUILD / name, OUT / name)
         if name.endswith('.pk3'):
             with zipfile.ZipFile(OUT / name) as archive:
@@ -60,6 +62,14 @@ def main():
     (evidence / 'sdl-loader-maps.txt').write_text('\n'.join(line for line in maps.splitlines() if '/libSDL' in line) + '\n')
     sdl2 = ctypes.CDLL('libSDL2-2.0.so.0')
     symbols = json.loads((SOURCE / 'tools/arm64/sdl2-symbols.json').read_text())
+    if native_gles:
+        symbols['native_gles_bridge_source'] = 'src/sdl/sdlglvideo.cpp'
+        symbols['native_gles_bridge_symbols'] = [
+            'SDL_GL_SetAttribute', 'SDL_GL_GetAttribute', 'SDL_GL_SetSwapInterval',
+            'SDL_GL_GetSwapInterval', 'SDL_GL_GetCurrentWindow', 'SDL_GetError',
+        ]
+        symbols['sdl2_required_symbols'] = sorted(set(
+            symbols['sdl2_required_symbols'] + symbols['native_gles_bridge_symbols']))
     assert all(hasattr(sdl2, name) for name in symbols['sdl2_required_symbols'])
     (evidence / 'sdl2-required-symbols.json').write_text(json.dumps(symbols, indent=2) + '\n')
     for path in tuple(paths):
@@ -107,9 +117,14 @@ def main():
         dependencies.append(entry)
     (evidence / 'dependencies.json').write_text(json.dumps(dependencies, indent=2) + '\n')
     client = next(entry for entry in dependencies if entry['path'] == str(binary))
+    if native_gles:
+        assert 'libGLESv2.so.2' in client['needed'], client['needed']
+        assert not any(name.startswith(('libGL.so', 'libGLU.', 'libGLEW.', 'libOpenGL.'))
+                       for name in client['needed']), client['needed']
     versions = sorted({symbol.split('@')[-1] for symbol in client['undefined_symbols'] if '@' in symbol})
     (evidence / 'client-abi.json').write_text(json.dumps({
         'machine': 'AArch64', 'needed': client['needed'], 'required_symbol_versions': versions,
+        'renderer': 'gles' if native_gles else 'desktop-gl', 'executable': executable,
         'note': 'Client imports only; dependency reports cover each library separately.',
     }, indent=2) + '\n')
     tools = {
@@ -118,6 +133,7 @@ def main():
         'target': command('gcc', '-dumpmachine').strip(),
         'cpu_flags': '-march=armv8-a -mtune=cortex-a35 -fsigned-char',
         'audio': 'OpenAL + libsndfile + mpg123; FMOD VoIP unavailable',
+        'graphics': 'native GLES2, firmware EGL/GLES' if native_gles else 'desktop OpenGL',
         'runtime_status': 'build/loader checks only; R36S graphics/audio/input untested',
     }
     (evidence / 'build.json').write_text(json.dumps(tools, indent=2) + '\n')

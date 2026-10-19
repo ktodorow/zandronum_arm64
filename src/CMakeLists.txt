@@ -9,7 +9,9 @@ include( CheckCXXSourceCompiles )
 include( CheckFunctionExists )
 include( CheckCXXCompilerFlag )
 include( FindPkgConfig )
-include( FindOpenGL )
+if( NOT ZANDRONUM_USE_GLES )
+	include( FindOpenGL )
+endif()
 # [BL] I can't seem to find where ZDoom gets this
 include( CheckLibraryExists )
 # [TP] For the code generator
@@ -281,16 +283,33 @@ endif( X64 )
 # Check if we have OpenGL
 # [BB] Only if necessary
 if( NOT NO_GL )
-	if( NOT OPENGL_FOUND )
-		message( FATAL_ERROR "OpenGL is required for building." )
-	endif( NOT OPENGL_FOUND )
-	if( NOT OPENGL_GLU_FOUND )
-		message( FATAL_ERROR "OpenGL GLU is required for building." )
-	endif( NOT OPENGL_GLU_FOUND )
-	
-	set( ZDOOM_LIBS ${ZDOOM_LIBS} ${OPENGL_LIBRARIES} )
-	include_directories( ${OPENGL_INCLUDE_DIR} )
+	if( ZANDRONUM_USE_GLES )
+		find_path( GLES2_INCLUDE_DIR GLES2/gl2.h )
+		find_library( GLES2_LIBRARY GLESv2 )
+		find_package( Threads REQUIRED )
+		find_package_handle_standard_args( GLES2 REQUIRED_VARS GLES2_LIBRARY GLES2_INCLUDE_DIR )
+		if( NOT GLES2_FOUND )
+			message( FATAL_ERROR "OpenGL ES 2 headers and library are required." )
+		endif()
+		add_definitions( -DUSE_GLES2=1 )
+		include_directories( ${GLES2_INCLUDE_DIR} )
+		set( ZDOOM_LIBS ${ZDOOM_LIBS} ${GLES2_LIBRARY} ${CMAKE_DL_LIBS} ${CMAKE_THREAD_LIBS_INIT} )
+	else()
+		if( NOT OPENGL_FOUND )
+			message( FATAL_ERROR "OpenGL is required for building." )
+		endif( NOT OPENGL_FOUND )
+		if( NOT OPENGL_GLU_FOUND )
+			message( FATAL_ERROR "OpenGL GLU is required for building." )
+		endif( NOT OPENGL_GLU_FOUND )
+
+		set( ZDOOM_LIBS ${ZDOOM_LIBS} ${OPENGL_LIBRARIES} )
+		include_directories( ${OPENGL_INCLUDE_DIR} )
+	endif()
 endif( NOT NO_GL )
+
+if( ZANDRONUM_USE_GLES AND NO_GL )
+	message( FATAL_ERROR "ZANDRONUM_USE_GLES cannot be combined with NO_GL or SERVERONLY." )
+endif()
 
 if( USE_OPENAL AND NOT NO_SOUND )
 	find_package( OpenAL REQUIRED )
@@ -909,6 +928,10 @@ if( NOT NO_GL )
 		gl/models/gl_models.cpp
 		gl/models/gl_voxels.cpp
 	)
+	if( ZANDRONUM_USE_GLES )
+		list( APPEND GL_SOURCES gl/system/gles_compat.cpp )
+		set( NATIVE_OPL_SOURCES oplsynth/opl_stream_jobs.cpp oplsynth/opl_stream_source.cpp )
+	endif()
 else( NOT NO_GL )
 	set( GL_SOURCES sdl/glstubs.cpp )
 endif( NOT NO_GL )
@@ -1357,6 +1380,8 @@ add_executable( zdoom WIN32
 	oplsynth/music_opldumper_mididevice.cpp
 	oplsynth/music_opl_mididevice.cpp
 	oplsynth/opl_mus_player.cpp
+	oplsynth/opl_sample_offset.cpp
+	${NATIVE_OPL_SOURCES}
 	oplsynth/dosbox/opl.cpp
 	oplsynth/OPL3.cpp
 	resourcefiles/ancientzip.cpp

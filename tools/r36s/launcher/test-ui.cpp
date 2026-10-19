@@ -13,9 +13,9 @@ using Steps = std::vector<SDL_GameControllerButton>;
 constexpr auto A = SDL_CONTROLLER_BUTTON_A, B = SDL_CONTROLLER_BUTTON_B;
 constexpr auto Down = SDL_CONTROLLER_BUTTON_DPAD_DOWN, Up = SDL_CONTROLLER_BUTTON_DPAD_UP;
 
-int drive(const fs::path &game, const fs::path &output, Steps steps)
+int drive(const fs::path &game, const fs::path &output, Steps steps, std::string preferred = "gl4es")
 {
-    App app(game,{},output,"gl4es",{});
+    App app(game,{},output,std::move(preferred),{});
     std::thread input([steps] {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         for (auto button : steps) {
@@ -69,6 +69,34 @@ int main()
         const Steps reload = {Down,Down,Down,Down,Down,A, Down,Down,Down,A, Up,Up,Up,Up,Up,A};
         assert(drive(root,output,reload)==0);
         assert(read(output)==selection);
+        // Native renderer appears only when matching executable is installed;
+        // controller selection survives profile persistence and atomic handoff.
+        std::ofstream(root/"zandronum-gles") << "native executable fixture";
+        write_profile(state/"last.profile",initial_profile(scan({root/"iwads"}),"gl4es"));
+        fs::remove(output);
+        const Steps native = {Down,Down,Down,Down,A,Down,Down,A,Up,Up,Up,Up,A};
+        assert(drive(root,output,native)==0);
+        assert(read_profile(state/"last.profile").renderer=="gles");
+        assert(read(output).rfind(std::string("gles\0",5),0)==0);
+        // Upgrade only current renderer, keeping selected content and named profiles.
+        write_profile(state/"last.profile",saved);
+        assert(drive(root,output,{A},"")==0);
+        const auto upgraded = read_profile(state/"last.profile");
+        assert(upgraded.renderer=="gles" && upgraded.iwad==saved.iwad && upgraded.addons==saved.addons);
+        assert(upgraded.name==saved.name && upgraded.id==saved.id);
+        assert(read_profile(state/"last.before-gles-v1.profile").renderer=="software");
+        assert(read_profile(state/"profiles"/(saved.id+".profile")).renderer=="software");
+        // Once upgraded, retain later explicit fallback choice across restarts.
+        write_profile(state/"last.profile",saved);
+        assert(drive(root,output,{A},"")==0);
+        assert(read_profile(state/"last.profile").renderer=="software");
+        // Fresh package chooses native when installed, legacy when absent.
+        fs::remove(state/"last.profile");
+        assert(drive(root,output,{A},"")==0);
+        assert(read_profile(state/"last.profile").renderer=="gles");
+        fs::remove(root/"zandronum-gles");
+        assert(drive(root,output,{A},"")==0);
+        assert(read_profile(state/"last.profile").renderer=="gl4es");
         // Standalone PWAD base is selectable, never duplicated as an add-on.
         const auto standalone = root/"iwads/megagame.wad";
         std::ofstream(standalone) << "PWAD";

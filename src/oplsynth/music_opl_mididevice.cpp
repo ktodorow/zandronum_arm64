@@ -67,6 +67,9 @@ EXTERN_CVAR(Int, opl_numchips)
 // PUBLIC DATA DEFINITIONS -------------------------------------------------
 
 CVAR(Bool, opl_fullpan, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG);
+#ifdef USE_GLES2
+CVAR(Bool, opl_async, true, CVAR_ARCHIVE|CVAR_GLOBALCONFIG);
+#endif
 
 // CODE --------------------------------------------------------------------
 
@@ -84,6 +87,14 @@ OPLMIDIDevice::OPLMIDIDevice()
 	SampleRate = (int)OPL_SAMPLE_RATE;
 }
 
+OPLMIDIDevice::~OPLMIDIDevice()
+{
+#ifdef USE_GLES2
+	// Reverse base destruction otherwise frees io before stream shutdown.
+	if (PreparedPCM != NULL) Close();
+#endif
+}
+
 //==========================================================================
 //
 // OPLMIDIDevice :: Open
@@ -94,6 +105,9 @@ OPLMIDIDevice::OPLMIDIDevice()
 
 int OPLMIDIDevice::Open(void (*callback)(unsigned int, void *, DWORD, DWORD), void *userdata)
 {
+#ifdef USE_GLES2
+	if (PreparedPCM != NULL) Close();
+#endif
 	if (io == NULL || 0 == (NumChips = io->OPLinit(opl_numchips, FullPan, true)))
 	{
 		return 1;
@@ -103,6 +117,10 @@ int OPLMIDIDevice::Open(void (*callback)(unsigned int, void *, DWORD, DWORD), vo
 	{
 		OPLstopMusic();
 		OPLplayMusic(100);
+#ifdef USE_GLES2
+		PreparedSoundSource *prepared = CreatePreparedPCM();
+		if (prepared != NULL && !Stream->SetPreparedSource(prepared)) DestroyPreparedPCM();
+#endif
 		DEBUGOUT("========= New song started ==========\n", 0, 0, 0);
 	}
 	return ret;
@@ -117,6 +135,9 @@ int OPLMIDIDevice::Open(void (*callback)(unsigned int, void *, DWORD, DWORD), vo
 void OPLMIDIDevice::Close()
 {
 	SoftSynthMIDIDevice::Close();
+#ifdef USE_GLES2
+	DestroyPreparedPCM();
+#endif
 	io->OPLdeinit();
 }
 
@@ -306,5 +327,12 @@ FString OPLMIDIDevice::GetStats()
 		}
 		out.AppendCStrPart (star, 3);
 	}
+#ifdef USE_GLES2
+	if (PreparedPCM != NULL && Stream != NULL)
+	{
+		out += " ";
+		out += Stream->GetStats();
+	}
+#endif
 	return out;
 }

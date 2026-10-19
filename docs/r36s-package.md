@@ -1,5 +1,9 @@
 # Personal R36S PortMaster package
 
+Native GLES now defaults for R36S. Current build/staging commands and measured
+limits: [native GLES guide](r36s-gles.md). Earlier issue records below describe
+GL4ES/software delivery before native upgrade.
+
 Issues [#3](https://github.com/ktodorow/zandronum_arm64/issues/3),
 [#4](https://github.com/ktodorow/zandronum_arm64/issues/4),
 [#5](https://github.com/ktodorow/zandronum_arm64/issues/5),
@@ -34,7 +38,7 @@ Run from checkout with Docker Desktop and Python 3 available:
 ```sh
 python3 tools/r36s/build-runtime.py --output ../zandronum-arm64-artifacts/issue-3/runtime-scoped
 python3 tools/r36s/build-launcher.py --output ../zandronum-arm64-artifacts/issue-8/launcher
-python3 tools/r36s/package.py --client ../zandronum-arm64-artifacts/issue-6/client-sky-fix --runtime ../zandronum-arm64-artifacts/issue-3/runtime-scoped --launcher ../zandronum-arm64-artifacts/issue-8/launcher --output ../zandronum-arm64-artifacts/issue-8/package-single-player
+python3 tools/r36s/package.py --default-renderer gl4es --client ../zandronum-arm64-artifacts/issue-6/client-sky-fix --runtime ../zandronum-arm64-artifacts/issue-3/runtime-scoped --launcher ../zandronum-arm64-artifacts/issue-8/launcher --output ../zandronum-arm64-artifacts/issue-8/package-single-player
 python3 tools/arm64/build.py cleanup
 ```
 

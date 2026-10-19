@@ -150,6 +150,10 @@ void GLFlat::DrawSubsectorLights(subsector_t * sub, int pass)
 		}
 		draw_dlightf++;
 
+#ifdef USE_GLES2
+		// gl_SetupLight selects ADD or REVERSE_SUBTRACT after the loop's Apply.
+		gl_RenderState.ApplyPipelineState();
+#endif
 		// Render the light
 		glBegin(GL_TRIANGLE_FAN);
 		for(k = 0, v = sub->firstline; k < sub->numlines; k++, v++)
@@ -467,6 +471,9 @@ inline void GLFlat::PutFlat(bool fog)
 		};
 
 		bool light = gl_forcemultipass;
+#ifdef USE_GLES2
+		light = gl_ForceMultipassLights(light, gl_dynlight_shader);
+#endif
 		bool masked = gltexture->isMasked() && ((renderflags&SSRF_RENDER3DPLANES) || stack);
 
 		if (!gl_fixedcolormap)

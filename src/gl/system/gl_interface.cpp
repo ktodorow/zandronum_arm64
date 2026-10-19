@@ -57,7 +57,9 @@ char myGlBeginCharArray[4] = {0,0,0,0};
 #include <SDL.h>
 #define wglGetProcAddress(x) (*SDL_GL_GetProcAddress)(x)
 #endif
+#ifndef USE_GLES2
 static void APIENTRY glBlendEquationDummy (GLenum mode);
+#endif
 
 
 static TArray<FString>  m_Extensions;
@@ -66,12 +68,14 @@ RenderContext gl;
 
 int occlusion_type=0;
 
+#ifndef USE_GLES2
 PROC myGetProcAddress(LPCSTR proc)
 {
 	PROC p = wglGetProcAddress(proc);
 	if (p == NULL) I_Error("Fatal: GL function '%s' not found.", proc);
 	return p;
 }
+#endif
 
 
 //==========================================================================
@@ -82,6 +86,7 @@ PROC myGetProcAddress(LPCSTR proc)
 
 static void CollectExtensions()
 {
+	m_Extensions.Clear();
 	const char *supported = NULL;
 	char *extensions, *extension;
 
@@ -127,6 +132,7 @@ static bool CheckExtension(const char *ext)
 //
 //==========================================================================
 
+#ifndef USE_GLES2
 static void InitContext()
 {
 	gl.flags=0;
@@ -342,6 +348,59 @@ void gl_LoadExtensions()
 	glMultiTexCoord2f = (PFNGLMULTITEXCOORD2FPROC) myGetProcAddress("glMultiTexCoord2fARB");
 	glMultiTexCoord2fv = (PFNGLMULTITEXCOORD2FVPROC) myGetProcAddress("glMultiTexCoord2fvARB");
 }
+#else
+void gl_LoadExtensions()
+{
+	const char *version = reinterpret_cast<const char *>(glGetString(GL_VERSION));
+	const char *prefix = "OpenGL ES";
+	if (version == NULL || strncmp(version, prefix, strlen(prefix)) != 0)
+	{
+		I_FatalError("Native GLES context required. GL_VERSION: %s", version ? version : "unavailable");
+	}
+
+	// ES version strings have a textual prefix; desktop version comparisons
+	// would mistake every ES driver for a newer desktop OpenGL implementation.
+	const char *number = version + strlen(prefix);
+	while (*number != '\0' && !isdigit(static_cast<unsigned char>(*number))) ++number;
+	int major = 0, minor = 0;
+	if (sscanf(number, "%d.%d", &major, &minor) != 2 || major < 2)
+	{
+		I_FatalError("Unsupported OpenGL ES version: %s. " GAMENAME " requires GLES 2.0 or newer.", version);
+	}
+
+	CollectExtensions();
+	if (major < 3 && !CheckExtension("GL_OES_packed_depth_stencil"))
+	{
+		I_FatalError("Native GLES renderer requires OpenGL ES 3 or GL_OES_packed_depth_stencil for camera textures and portals.");
+	}
+	gl.vendorstring = reinterpret_cast<char *>(const_cast<GLubyte *>(glGetString(GL_VENDOR)));
+	if (gl.vendorstring == NULL || glGetString(GL_SHADING_LANGUAGE_VERSION) == NULL)
+	{
+		I_FatalError("Native GLES context did not provide vendor and shader language information.");
+	}
+
+	// These are engine feature flags, not claims of desktop API compatibility.
+	// ES 2.0 provides shader programs, VBOs and framebuffer objects in core.
+	gl.flags = RFL_GL_20 | RFL_GL_21 | RFL_VBO | RFL_FRAMEBUFFER;
+	gl.shadermodel = 4;
+	occlusion_type = 0;
+	if (major >= 3 || CheckExtension("GL_OES_texture_npot")) gl.flags |= RFL_NPOT_TEXTURE;
+
+	GLint fragmentVectors = 0, attributes = 0, textureUnits = 0;
+	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &gl.max_texturesize);
+	glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_VECTORS, &fragmentVectors);
+	glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &attributes);
+	glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &textureUnits);
+	if (gl.max_texturesize <= 0 || fragmentVectors <= 0 || attributes < 8 || textureUnits < 2)
+	{
+		I_FatalError("Insufficient GLES limits: texture size %d, fragment uniform vectors %d, vertex attributes %d, texture units %d.",
+			gl.max_texturesize, fragmentVectors, attributes, textureUnits);
+	}
+	gl.maxuniforms = static_cast<unsigned int>(fragmentVectors) * 4u;
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	gles::Initialize();
+}
+#endif
 
 //==========================================================================
 //
@@ -361,6 +420,22 @@ void gl_PrintStartupLog()
 
 	glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &v);
 	Printf ("Max. texture units: %d\n", v);
+#ifdef USE_GLES2
+	glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_VECTORS, &v);
+	Printf ("Max. fragment uniform vectors: %d (%u components)\n", v, gl.maxuniforms);
+	glGetIntegerv(GL_MAX_VERTEX_UNIFORM_VECTORS, &v);
+	Printf ("Max. vertex uniform vectors: %d\n", v);
+	glGetIntegerv(GL_MAX_VARYING_VECTORS, &v);
+	Printf ("Max. varying vectors: %d\n", v);
+	glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &v);
+	Printf ("Max. vertex attributes: %d\n", v);
+	Printf ("Max. texture size: %d\n", gl.max_texturesize);
+	Printf ("Max. dynamic lights per pass: %d\n", gl.MaxLights());
+	GLint depth = 0, stencil = 0;
+	glGetIntegerv(GL_DEPTH_BITS, &depth);
+	glGetIntegerv(GL_STENCIL_BITS, &stencil);
+	Printf ("Native GLES framebuffer: depth %d, stencil %d\n", depth, stencil);
+#else
 	glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS, &v);
 	Printf ("Max. fragment uniforms: %d\n", v);
 	if (gl.shadermodel == 4) gl.maxuniforms = v;
@@ -372,6 +447,7 @@ void gl_PrintStartupLog()
 	Printf ("Max. combined uniforms: %d\n", v);
 	glGetIntegerv(GL_MAX_COMBINED_UNIFORM_BLOCKS, &v);
 	Printf ("Max. combined uniform blocks: %d\n", v);
+#endif
 
 }
 
@@ -381,6 +457,7 @@ void gl_PrintStartupLog()
 //
 //==========================================================================
 
+#ifndef USE_GLES2
 static void APIENTRY glBlendEquationDummy (GLenum mode)
 {
 	// If this is not supported all non-existent modes are
@@ -394,6 +471,7 @@ static void APIENTRY glBlendEquationDummy (GLenum mode)
 		glColorMask(false, false, false, false);
 	}
 }
+#endif
 
 //==========================================================================
 //
@@ -403,6 +481,9 @@ static void APIENTRY glBlendEquationDummy (GLenum mode)
 
 void gl_SetTextureMode(int type)
 {
+#ifdef USE_GLES2
+	gles::SetTextureMode(type);
+#else
 	static float white[] = {1.f,1.f,1.f,1.f};
 
 	if (type == TM_MASK)
@@ -463,6 +544,7 @@ void gl_SetTextureMode(int type)
 	{
 		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 	}
+#endif
 }
 
 //} // extern "C"

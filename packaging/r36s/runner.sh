@@ -67,7 +67,10 @@ echo "PortMaster=$PM_VERSION CFW=$CFW_NAME/$CFW_VERSION controlfolder=$controlfo
 echo "Controller=$DEVICE mapping=$sdl_controllerconfig"
 
 renderer=${ZANDRONUM_RENDERER:-$(cat renderer.txt 2>/dev/null)}
-renderer=${renderer:-gl4es}
+if [[ -z "$renderer" ]]; then
+    renderer=gl4es
+    [[ -x zandronum-gles ]] && renderer=gles
+fi
 save_key=base
 addon_args=()
 export LD_LIBRARY_PATH="$gamedir/libs.$DEVICE_ARCH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -96,7 +99,7 @@ if [[ ${ZANDRONUM_LAUNCHER:-1} != 0 && -z "$iwad" && $# == 0 ]]; then
     rm -f -- "$selection_file"
     selection_file=''
     if (( ${#selection[@]} < 3 || ${#selection[@]} > 131 )) ||
-        [[ ! ${selection[0]} =~ ^(gl4es|software)$ ]] ||
+        [[ ! ${selection[0]} =~ ^(gles|gl4es|software)$ ]] ||
         [[ ${selection[1]} != /* || ! -f ${selection[1]} ]] ||
         [[ ! ${selection[2]} =~ ^(base|set-[0-9a-f]{16})$ ]]; then
         echo 'ERROR: invalid content-menu selection.'
@@ -128,7 +131,19 @@ if [[ ! -f "$iwad" ]]; then
 fi
 
 save_directory="$gamedir/saves"
+client=zandronum
 case "$renderer" in
+    gles)
+        client=zandronum-gles
+        [[ -x "$client" ]] || { echo 'ERROR: native GLES client is not installed.'; exit 2; }
+        # Keep vendor drivers; never source desktop-GL hooks or wrappers here.
+        unset LIBGL_EGL LIBGL_GLES LIBGL_ES LIBGL_GL
+        export SDL_VIDEO_GL_DRIVER=/usr/lib/aarch64-linux-gnu/libGLESv2.so.2
+        export SDL_VIDEO_EGL_DRIVER=/usr/lib/aarch64-linux-gnu/libEGL.so.1
+        export ZANDRONUM_GLES_CACHE="$gamedir/cache/gles"
+        renderer_id=1
+        save_directory="$gamedir/saves/gles"
+        ;;
     gl4es)
         graphics_hook="$controlfolder/libgl_${CFW_NAME}.txt"
         [[ -f "$graphics_hook" ]] || graphics_hook="$controlfolder/libgl_default.txt"
@@ -145,7 +160,7 @@ case "$renderer" in
         # Engine rejects GL saves; keep original saves and autosaves separate.
         save_directory="$gamedir/saves/software"
         ;;
-    *) echo "ERROR: renderer must be gl4es or software, got $renderer"; exit 2 ;;
+    *) echo "ERROR: renderer must be gles, gl4es or software, got $renderer"; exit 2 ;;
 esac
 config_file="$gamedir/config/zandronum.ini"
 [[ -f "$config_file" ]] || cp defaults.ini "$config_file" || exit 1
@@ -155,13 +170,20 @@ if [[ "$save_key" != base ]]; then
     mkdir -p "$(dirname -- "$config_file")" || exit 1
     [[ -f "$config_file" ]] || cp "$gamedir/config/zandronum.ini" "$config_file" || exit 1
 fi
+if [[ "$renderer" == gles ]]; then
+    # Seed native settings from existing owner config; keep backend choices separate.
+    source_config="$config_file"
+    config_file="$(dirname -- "$source_config")/gles/zandronum.ini"
+    mkdir -p "$(dirname -- "$config_file")" || exit 1
+    [[ -f "$config_file" ]] || cp "$source_config" "$config_file" || exit 1
+fi
 mkdir -p "$save_directory" || exit 1
 echo "Renderer=$renderer internal=640x480 display=${DISPLAY_WIDTH}x${DISPLAY_HEIGHT} SDL=$SDL_VIDEODRIVER"
 echo "IWAD=$iwad"
-sha256sum "$iwad" zandronum *.pk3
+sha256sum "$iwad" "$client" *.pk3
 (( ${#addon_args[@]} )) && sha256sum "${addon_args[@]:1}"
 echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH EGL=$SDL_VIDEO_EGL_DRIVER"
-python3 check-runtime.py || exit 1
+python3 check-runtime.py --client "$client" || exit 1
 
 # Migrate #3 menu-only configuration once; retain owner changes on relaunch.
 # Marker is archived by engine with bindings, so failed initialization retries.
@@ -184,14 +206,21 @@ if ! grep -qx 'r36s_audio_profile=2' "$config_file"; then
 else
     echo 'Keeping saved audio settings (profile 2 already installed).'
 fi
+if [[ "$renderer" == gles ]] && ! grep -qx 'r36s_gles_profile=1' "$config_file"; then
+    if [[ ! -e "${config_file%.ini}.before-gles-v1.ini" ]]; then
+        cp "$config_file" "${config_file%.ini}.before-gles-v1.ini" || exit 1
+    fi
+    profile_args+=(-exec "$gamedir/gles.cfg")
+    echo 'Installing native GLES profile 1; original configuration backed up.'
+fi
 echo 'Audio=OpenAL Soft/ALSA; built-in DBOPL default; saved engine volumes retained.'
 echo "Configuration=$config_file Saves=$save_directory ContentSet=$save_key"
 # Helper supplies keyboard/mouse input; native joystick stays disabled.
 pm_platform_helper
 # Installed helper uses pkill -f; match only client's explicit argv[0].
-"$controlfolder/gptokeyb" -k '^\./zandronum( |$)' -hotkey back -c "$gamedir/gameplay.gptk" &
+"$controlfolder/gptokeyb" -k "^\./$client( |$)" -hotkey back -c "$gamedir/gameplay.gptk" &
 helper_pid=$!
-./zandronum -iwad "$iwad" -config "$config_file" \
+"./$client" -iwad "$iwad" -config "$config_file" \
     -savedir "$save_directory" -width 640 -height 480 \
     "${profile_args[@]}" "${addon_args[@]}" +vid_renderer "$renderer_id" +fullscreen 1 +use_joystick 0 "$@" &
 game_pid=$!

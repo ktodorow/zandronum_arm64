@@ -3,6 +3,9 @@
 // HEADER FILES ------------------------------------------------------------
 
 #include <iostream>
+#ifdef USE_GLES2
+#include <dlfcn.h>
+#endif
 
 #include "doomtype.h"
 
@@ -51,6 +54,56 @@ extern IVideo *Video;
 EXTERN_CVAR (Float, Gamma)
 EXTERN_CVAR (Int, vid_displaybits)
 EXTERN_CVAR (Int, vid_renderer)
+
+#ifdef USE_GLES2
+namespace
+{
+// SDL 1.2's attribute enum cannot express a GLES profile. sdl12-compat already
+// owns SDL2, so call only that loaded module; loading a second SDL2 is unsafe.
+struct NativeSDLGL
+{
+	int (*SetAttribute)(int, int);
+	int (*GetAttribute)(int, int *);
+	int (*SetSwapInterval)(int);
+	int (*GetSwapInterval)();
+	void *(*GetCurrentWindow)();
+	const char *(*GetError)();
+
+	NativeSDLGL()
+	{
+		void *module = dlopen("libSDL2-2.0.so.0", RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
+		if (!module) I_FatalError("Native GLES requires the SDL2 module already loaded by sdl12-compat: %s", dlerror());
+#define SDL2_GL_SYMBOL(member, name) \
+		member = reinterpret_cast<decltype(member)>(dlsym(module, name)); \
+		if (!member) I_FatalError("Native GLES requires SDL2 symbol %s", name)
+		SDL2_GL_SYMBOL(SetAttribute, "SDL_GL_SetAttribute");
+		SDL2_GL_SYMBOL(GetAttribute, "SDL_GL_GetAttribute");
+		SDL2_GL_SYMBOL(SetSwapInterval, "SDL_GL_SetSwapInterval");
+		SDL2_GL_SYMBOL(GetSwapInterval, "SDL_GL_GetSwapInterval");
+		SDL2_GL_SYMBOL(GetCurrentWindow, "SDL_GL_GetCurrentWindow");
+		SDL2_GL_SYMBOL(GetError, "SDL_GetError");
+#undef SDL2_GL_SYMBOL
+		// Keep module reference: pointers remain valid until process shutdown.
+	}
+
+	void Attribute(int attribute, int value)
+	{
+		if (SetAttribute(attribute, value) != 0)
+			I_FatalError("Native GLES SDL2 attribute %d=%d failed: %s", attribute, value, GetError());
+	}
+};
+
+NativeSDLGL &NativeGL()
+{
+	static NativeSDLGL api;
+	return api;
+}
+
+// SDL2 SDL_GLattr values, not SDL 1.2 values. No SDL2 structs cross this bridge.
+enum { SDL2_GL_CONTEXT_MAJOR = 17, SDL2_GL_CONTEXT_MINOR = 18,
+	SDL2_GL_CONTEXT_EGL = 19, SDL2_GL_CONTEXT_PROFILE = 21, SDL2_GL_PROFILE_ES = 4 };
+}
+#endif
 
 
 // PUBLIC DATA DEFINITIONS -------------------------------------------------
@@ -285,6 +338,12 @@ bool SDLGLVideo::SetResolution (int width, int height, int bits)
 
 bool SDLGLVideo::SetupPixelFormat(bool allowsoftware, int multisample)
 {
+#ifdef USE_GLES2
+	NativeGL().Attribute(SDL2_GL_CONTEXT_PROFILE, SDL2_GL_PROFILE_ES);
+	NativeGL().Attribute(SDL2_GL_CONTEXT_MAJOR, 2);
+	NativeGL().Attribute(SDL2_GL_CONTEXT_MINOR, 0);
+	NativeGL().Attribute(SDL2_GL_CONTEXT_EGL, 1);
+#endif
 	SDL_GL_SetAttribute( SDL_GL_RED_SIZE,  8 );
 	SDL_GL_SetAttribute( SDL_GL_GREEN_SIZE,  8 );
 	SDL_GL_SetAttribute( SDL_GL_BLUE_SIZE,  8 );
@@ -345,6 +404,24 @@ SDLGLFB::SDLGLFB (void *, int width, int height, int, int, bool fullscreen)
 
 	if (Screen == NULL)
 		return;
+
+#ifdef USE_GLES2
+	int profile = 0, major = 0, minor = 0, depth = 0, stencil = 0;
+	NativeSDLGL &native = NativeGL();
+	void *(*compatWindow)() = reinterpret_cast<void *(*)()>(SDL_GL_GetProcAddress("SDL12COMPAT_GetWindow"));
+	if (!compatWindow || native.GetCurrentWindow() != compatWindow())
+		I_FatalError("Native GLES SDL2 context does not belong to sdl12-compat's window");
+	if (native.GetAttribute(SDL2_GL_CONTEXT_PROFILE, &profile) != 0 ||
+		native.GetAttribute(SDL2_GL_CONTEXT_MAJOR, &major) != 0 ||
+		native.GetAttribute(SDL2_GL_CONTEXT_MINOR, &minor) != 0 ||
+		native.GetAttribute(SDL_GL_DEPTH_SIZE, &depth) != 0 ||
+		native.GetAttribute(SDL_GL_STENCIL_SIZE, &stencil) != 0)
+		I_FatalError("Native GLES cannot query actual SDL2 context: %s", native.GetError());
+	if (profile != SDL2_GL_PROFILE_ES || major < 2 || depth < 16 || stencil < 8)
+		I_FatalError("Native GLES needs ES2+, depth16+, stencil8; got profile=%d ES%d.%d depth=%d stencil=%d",
+			profile, major, minor, depth, stencil);
+	Printf("Native GLES SDL2 context ES%d.%d depth=%d stencil=%d (firmware EGL/GLES)\n", major, minor, depth, stencil);
+#endif
 
 	m_supportsGamma = -1 != SDL_GetGammaRamp(m_origGamma[0], m_origGamma[1], m_origGamma[2]);
 	
@@ -432,6 +509,12 @@ bool SDLGLFB::IsValid ()
 
 void SDLGLFB::SetVSync( bool vsync )
 {
+#ifdef USE_GLES2
+	NativeSDLGL &native = NativeGL();
+	if (native.SetSwapInterval(vsync ? 1 : 0) != 0)
+		I_FatalError("Native GLES cannot set swap interval %d: %s", vsync ? 1 : 0, native.GetError());
+	Printf("Native GLES swap interval=%d\n", native.GetSwapInterval());
+#endif
 #if defined (__APPLE__)
 	const GLint value = vsync ? 1 : 0;
 	CGLSetParameter( CGLGetCurrentContext(), kCGLCPSwapInterval, &value );

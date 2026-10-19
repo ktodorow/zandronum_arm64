@@ -37,6 +37,7 @@
 
 #include "doomtype.h"
 #include "i_soundinternal.h"
+#include "prepared_stream.h"
 
 enum ECodecType
 {
@@ -75,6 +76,7 @@ public:
 	virtual bool SetPaused(bool paused) = 0;
 	virtual unsigned int GetPosition() = 0;
 	virtual bool IsEnded() = 0;
+	virtual bool SetPreparedSource(PreparedSoundSource *) { return false; }
 	virtual bool SetPosition(unsigned int pos);
 	virtual bool SetOrder(int order);
 	virtual FString GetStats();

@@ -8,6 +8,11 @@
 #include "opl_mus_player.h"
 #include "doomtype.h"
 #include "opl.h"
+#include "opl_sample_offset.h"
+#ifdef USE_GLES2
+#include "opl_stream_source.h"
+#include <new>
+#endif
 #include "w_wad.h"
 #include "templates.h"
 #include "c_cvars.h"
@@ -17,6 +22,9 @@
 #define IMF_RATE				700.0
 
 EXTERN_CVAR (Int, opl_numchips)
+#ifdef USE_GLES2
+EXTERN_CVAR (Bool, opl_async)
+#endif
 
 OPLmusicBlock::OPLmusicBlock()
 {
@@ -26,17 +34,50 @@ OPLmusicBlock::OPLmusicBlock()
 	NumChips = MIN(*opl_numchips, 2);
 	Looping = false;
 	FullPan = false;
+#ifdef USE_GLES2
+	PreparedPCM = NULL;
+#endif
 	io = NULL;
 	io = new OPLio;
 }
 
 OPLmusicBlock::~OPLmusicBlock()
 {
+#ifdef USE_GLES2
+	DestroyPreparedPCM();
+#endif
 	delete io;
 }
 
+#ifdef USE_GLES2
+PreparedSoundSource *OPLmusicBlock::CreatePreparedPCM()
+{
+	assert(PreparedPCM == NULL);
+	if (!opl_async || !io->SupportsPreparedPCM()) return NULL;
+	try { PreparedPCM = new OPLPreparedSource(*io, LastOffset); }
+	catch (const std::bad_alloc &) { return NULL; }
+	return PreparedPCM;
+}
+
+void OPLmusicBlock::DestroyPreparedPCM()
+{
+	delete PreparedPCM;
+	PreparedPCM = NULL;
+}
+
+bool OPLmusicBlock::RecordPreparedCorrection(float *pcm, int samples)
+{
+	return PreparedPCM->RecordCorrection(pcm, samples);
+}
+#endif
+
 void OPLmusicBlock::ResetChips ()
 {
+#ifdef USE_GLES2
+	// This entry point belongs to raw OPL playback; MIDI core selection is
+	// latched when device opens, and Close destroys prepared source first.
+	assert(PreparedPCM == NULL);
+#endif
 	ChipAccess.Enter();
 	io->OPLdeinit ();
 	NumChips = io->OPLinit(MIN(*opl_numchips, 2), FullPan);
@@ -50,6 +91,9 @@ void OPLmusicBlock::Restart()
 	MLtime = 0;
 	playingcount = 0;
 	LastOffset = 0;
+#ifdef USE_GLES2
+	if (PreparedPCM != NULL) PreparedPCM->ResetOffset();
+#endif
 }
 
 OPLmusicFile::OPLmusicFile (FILE *file, BYTE *musiccache, int len)
@@ -297,75 +341,10 @@ bool OPLmusicBlock::ServiceStream (void *buff, int numbytes)
 
 void OPLmusicBlock::OffsetSamples(float *buff, int count)
 {
-	// Three out of four of the OPL waveforms are non-negative. Depending on
-	// timbre selection, this can cause the output waveform to tend toward
-	// very large positive values. Heretic's music is particularly bad for
-	// this. This function attempts to compensate by offseting the sample
-	// data back to around the [-1.0, 1.0] range.
-
-	double max = -1e10, min = 1e10, offset, step;
-	int i, ramp, largest_at = 0;
-
-	// Find max and min values for this segment of the waveform.
-	for (i = 0; i < count; ++i)
-	{
-		if (buff[i] > max)
-		{
-			max = buff[i];
-			largest_at = i;
-		}
-		if (buff[i] < min)
-		{
-			min = buff[i];
-			largest_at = i;
-		}
-	}
-	// Prefer to keep the offset at 0, even if it means a little clipping.
-	if (LastOffset == 0 && min >= -1.1 && max <= 1.1)
-	{
-		offset = 0;
-	}
-	else
-	{
-		offset = (max + min) / 2;
-		// If the new offset is close to 0, make it 0 to avoid making another
-		// full loop through the sample data.
-		if (fabs(offset) < 1/256.0)
-		{
-			offset = 0;
-		}
-	}
-	// Ramp the offset change so there aren't any abrupt clicks in the output.
-	// If the ramp is too short, it can sound scratchy. cblood2.mid is
-	// particularly unforgiving of short ramps.
-	if (count >= 512)
-	{
-		ramp = 512;
-		step = (offset - LastOffset) / 512;
-	}
-	else
-	{
-		ramp = MIN(count, MAX(196, largest_at));
-		step = (offset - LastOffset) / ramp;
-	}
-	offset = LastOffset;
-	i = 0;
-	if (step != 0)
-	{
-		for (; i < ramp; ++i)
-		{
-			buff[i] = float(buff[i] - offset);
-			offset += step;
-		}
-	}
-	if (offset != 0)
-	{
-		for (; i < count; ++i)
-		{
-			buff[i] = float(buff[i] - offset);
-		}
-	}
-	LastOffset = float(offset);
+#ifdef USE_GLES2
+	if (PreparedPCM != NULL && RecordPreparedCorrection(buff, count)) return;
+#endif
+	OPLCorrectSampleOffset(buff, count, LastOffset);
 }
 
 int OPLmusicFile::PlayTick ()

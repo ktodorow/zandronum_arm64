@@ -49,7 +49,14 @@ struct RenderContext
 
 	int MaxLights() const
 	{
+#ifdef USE_GLES2
+		// GLES reports vector limits; maxuniforms stores their float count.
+		// Reserve room for material, clipping, fog and matrix uniforms.
+		int count = (int(maxuniforms) - 128) / 8;
+		return count < 1 ? 1 : count > 128 ? 128 : count;
+#else
 		return maxuniforms>=2048? 128:64;
+#endif
 	}
 };
 

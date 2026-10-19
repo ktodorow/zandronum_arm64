@@ -11,7 +11,7 @@ struct Profile {
     std::string id;
     std::string name = "NEW COMBINATION";
     fs::path iwad;
-    std::string renderer = "gl4es";
+    std::string renderer = "gles";
     std::vector<fs::path> addons;
 };
 

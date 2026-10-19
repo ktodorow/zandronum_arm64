@@ -101,6 +101,9 @@ int main()
         auto loaded=read_profile(saved);
         assert(loaded.id==profile.id && loaded.name==profile.name && loaded.iwad==profile.iwad);
         assert(loaded.addons==profile.addons && loaded.renderer=="software");
+        profile.renderer="gles";
+        write_profile(root/"native.profile",profile);
+        assert(read_profile(root/"native.profile").renderer=="gles");
         const auto selected=root/"selection.bin";
         write_selection(selected,loaded);
         std::string expected;

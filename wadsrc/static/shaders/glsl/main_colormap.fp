@@ -15,6 +15,9 @@ vec4 desaturate(vec4 texel)
 vec4 getTexel(vec2 st)
 {
 	vec4 texel = texture2D(tex, st);
+#ifdef USE_GLES2
+	if (uTextureEnabled == 0) texel = vec4(1.0);
+#endif
 	
 	#ifndef NO_TEXTUREMODE
 		//
@@ -28,6 +31,13 @@ vec4 getTexel(vec2 st)
 		{
 			texel.rgb = vec3(1.0,1.0,1.0);
 		}
+#ifdef USE_GLES2
+		else if (texturemode == 4 || texturemode == 6)
+		{
+			texel.rgb = vec3(1.0) - texel.rgb;
+			if (texturemode == 6) texel.a = 1.0;
+		}
+#endif
 	#endif
 
 	return texel;

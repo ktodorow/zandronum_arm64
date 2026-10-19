@@ -10,7 +10,7 @@ RUN rm /etc/apt/sources.list.d/debian.sources && \
     apt-get install -y --no-install-recommends \
       g++=4:14.2.0-1 cmake=3.31.6-2 ninja-build pkg-config python3 \
       libbz2-dev libjpeg62-turbo-dev zlib1g-dev libssl-dev \
-      libsdl1.2-compat-dev libgl-dev libglu1-mesa-dev libglew-dev \
+      libsdl1.2-compat-dev libgl-dev libglu1-mesa-dev libglew-dev libgles-dev libegl-dev \
       libopenal-dev libsndfile1-dev libmpg123-dev binutils file ca-certificates && \
     dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /toolchain-packages.tsv && \
     rm -rf /var/lib/apt/lists/*
@@ -19,13 +19,15 @@ FROM toolchain AS build
 COPY . /src
 WORKDIR /src
 ARG JOBS=4
+ARG GLES=ON
 ENV SOURCE_DATE_EPOCH=1754343618 TZ=UTC LC_ALL=C
-RUN --mount=type=cache,target=/build,sharing=locked \
+RUN --mount=type=cache,id=zandronum-arm64-build-${GLES},target=/build,sharing=locked \
     cmake -S /src -B /build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
       '-DCMAKE_C_FLAGS=-march=armv8-a -mtune=cortex-a35 -fsigned-char -ffile-prefix-map=/src=.' \
       '-DCMAKE_CXX_FLAGS=-march=armv8-a -mtune=cortex-a35 -fsigned-char -ffile-prefix-map=/src=.' \
       -DSERVERONLY=OFF -DNO_ASM=ON -DNO_GTK=ON -DNO_GL=OFF \
+      -DZANDRONUM_USE_GLES="$GLES" \
       -DNO_SOUND=OFF -DUSE_OPENAL=ON -DRELEASE_WITH_DEBUG_FILE=ON && \
     cmake --build /build --parallel "$JOBS" > /build/build.log 2>&1 && \
     python3 /src/tools/arm64/export.py || \

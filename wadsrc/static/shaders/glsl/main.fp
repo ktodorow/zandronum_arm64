@@ -11,7 +11,9 @@
 //#extension GL_EXT_gpu_shader4 : enable
 
 uniform ivec3 lightrange;
-#ifndef MAXLIGHTS128
+#ifdef USE_GLES2
+uniform vec4 lights[GLES_LIGHT_ARRAY_SIZE];
+#elif !defined(MAXLIGHTS128)
 uniform vec4 lights[256];
 #else
 uniform vec4 lights[128];
@@ -143,6 +145,9 @@ vec4 getLightColor(float fogdist, float fogfactor)
 vec4 getTexel(vec2 st)
 {
 	vec4 texel = texture2D(tex, st);
+#ifdef USE_GLES2
+	if (uTextureEnabled == 0) texel = vec4(1.0);
+#endif
 	
 	#ifndef NO_TEXTUREMODE
 	//
@@ -156,6 +161,13 @@ vec4 getTexel(vec2 st)
 	{
 		texel.rgb = vec3(1.0,1.0,1.0);
 	}
+#ifdef USE_GLES2
+		else if (texturemode == 4 || texturemode == 6)
+		{
+			texel.rgb = vec3(1.0) - texel.rgb;
+			if (texturemode == 6) texel.a = 1.0;
+		}
+#endif
 	#endif
 
 	return desaturate(texel);
@@ -219,6 +231,23 @@ void main()
 	
 	
 	#ifdef DYNLIGHT
+#ifdef USE_GLES2
+		// ES 1.00 requires constant loop bounds and loop-indexed uniform arrays.
+		for (int i = 0; i < GLES_LIGHT_ARRAY_SIZE; i += 2)
+		{
+			// Keep ES 1.00's fixed bound, but stop after last active light.
+			if (i >= lightrange.z) break;
+			if (i < lightrange.z)
+			{
+				vec4 lightpos = lights[i];
+				vec4 lightcolor = lights[i + 1];
+				lightcolor.rgb *= max(lightpos.w - distance(pixelpos.xyz, lightpos.xyz), 0.0) / lightpos.w;
+				if (i < lightrange.x) dynlight += lightcolor;
+				else if (i < lightrange.y) dynlight -= lightcolor;
+				else addlight += lightcolor;
+			}
+		}
+#else
 		for(int i=0; i<lightrange.x; i+=2)
 		{
 			vec4 lightpos = lights[i];
@@ -243,6 +272,7 @@ void main()
 			lightcolor.rgb *= max(lightpos.w - distance(pixelpos.xyz, lightpos.xyz),0.0) / lightpos.w;
 			addlight += lightcolor;
 		}
+#endif
 		frag.rgb = clamp(frag.rgb + dynlight.rgb, 0.0, 1.4);
 	#endif
 		

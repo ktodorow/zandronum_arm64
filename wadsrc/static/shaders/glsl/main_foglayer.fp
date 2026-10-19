@@ -22,6 +22,9 @@ vec4 desaturate(vec4 texel)
 vec4 getTexel(vec2 st)
 {
 	vec4 texel = texture2D(tex, st);
+#ifdef USE_GLES2
+	if (uTextureEnabled == 0) texel = vec4(1.0);
+#endif
 	return texel;
 }
 

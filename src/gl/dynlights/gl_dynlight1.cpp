@@ -112,6 +112,13 @@ bool gl_GetLight(Plane & p, ADynamicLight * light,
 	{
 		return false;
 	}
+#ifdef USE_GLES2
+	// Match multipass lights: hidden team/class actors must not reveal a light.
+	if (light->owned && light->target != NULL && !light->target->IsVisibleToPlayer())
+	{
+		return false;
+	}
+#endif
 
 
 	float cs;

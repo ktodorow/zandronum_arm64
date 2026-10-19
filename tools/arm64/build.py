@@ -28,6 +28,9 @@ def snapshot(destination):
         "--exclude-standard", "-z",
     ]).decode().split("\0")
     for name in sorted(set(paths) - {""}):
+        # Scratch may contain private access notes or upstream research clones.
+        if name.startswith(".scratch/"):
+            continue
         source = ROOT / name
         if not source.is_file():
             continue
@@ -55,6 +58,11 @@ def main():
     parser.add_argument("action", choices=["build", "cleanup", "name"])
     parser.add_argument("--output", type=Path)
     parser.add_argument("--jobs", type=int, default=4)
+    graphics = parser.add_mutually_exclusive_group()
+    graphics.add_argument("--gles", dest="gles", action="store_true", default=True,
+                          help="build native GLES client as zandronum-gles (default)")
+    graphics.add_argument("--legacy-gl", dest="gles", action="store_false",
+                          help="build desktop GL client for GL4ES/software fallback")
     args = parser.parse_args()
     if args.action == "name":
         print(BUILDER)
@@ -83,6 +91,7 @@ def main():
         run("docker", "buildx", "build", "--builder", BUILDER,
             "--platform", "linux/arm64", "--progress", "plain",
             "--build-arg", f"JOBS={args.jobs}",
+            "--build-arg", "GLES=" + ("ON" if args.gles else "OFF"),
             "--file", str(source / "tools/arm64/Dockerfile"),
             "--output", "type=local,dest=" + str(output), str(source))
         # Export exact build input beside binary, including uncommitted edits.

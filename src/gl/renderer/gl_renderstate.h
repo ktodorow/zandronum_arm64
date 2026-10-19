@@ -117,6 +117,9 @@ class FRenderState
 	float glAlphaThreshold;
 	bool glAlphaTest;
 	int glBlendEquation;
+#ifdef USE_GLES2
+	bool mPipelineStateValid;
+#endif
 
 	bool ffTextureEnabled;
 	bool ffFogEnabled;
@@ -137,6 +140,9 @@ public:
 
 	int SetupShader(bool cameratexture, int &shaderindex, int &cm, float warptime);
 	void Apply(bool forcenoshader = false);
+#ifdef USE_GLES2
+	void ApplyPipelineState();
+#endif
 
 	void SetTextureMode(int mode)
 	{
@@ -223,6 +229,11 @@ public:
 
 	void BlendFunc(int src, int dst)
 	{
+#ifdef USE_GLES2
+		mSrcBlend = src;
+		mDstBlend = dst;
+		if (gl_direct_state_change) ApplyPipelineState();
+#else
 		if (!gl_direct_state_change)
 		{
 			mSrcBlend = src;
@@ -232,10 +243,16 @@ public:
 		{
 			glBlendFunc(src, dst);
 		}
+#endif
 	}
 
 	void AlphaFunc(int func, float thresh)
 	{
+#ifdef USE_GLES2
+		mAlphaFunc = func;
+		mAlphaThreshold = thresh;
+		if (gl_direct_state_change) ApplyPipelineState();
+#else
 		if (!gl_direct_state_change)
 		{
 			mAlphaFunc = func;
@@ -245,10 +262,15 @@ public:
 		{
 			::glAlphaFunc(func, thresh);
 		}
+#endif
 	}
 
 	void EnableAlphaTest(bool on)
 	{
+#ifdef USE_GLES2
+		mAlphaTest = on;
+		if (gl_direct_state_change) ApplyPipelineState();
+#else
 		if (!gl_direct_state_change)
 		{
 			mAlphaTest = on;
@@ -258,10 +280,15 @@ public:
 			if (on) glEnable(GL_ALPHA_TEST);
 			else glDisable(GL_ALPHA_TEST);
 		}
+#endif
 	}
 
 	void BlendEquation(int eq)
 	{
+#ifdef USE_GLES2
+		mBlendEquation = eq;
+		if (gl_direct_state_change) ApplyPipelineState();
+#else
 		if (!gl_direct_state_change)
 		{
 			mBlendEquation = eq;
@@ -270,6 +297,7 @@ public:
 		{
 			::glBlendEquation(eq);
 		}
+#endif
 	}
 
 	void Set2DMode(bool on)

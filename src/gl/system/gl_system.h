@@ -67,7 +67,9 @@
 #include <fcntl.h>
 
 //GL headers
-#if defined(__APPLE__)
+#if defined(USE_GLES2)
+#include "gl/system/gles_compat.h"
+#elif defined(__APPLE__)
 #include <GL/glew.h>
 #include <OpenGL/OpenGL.h>
 #elif defined(__unix__)

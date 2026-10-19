@@ -153,6 +153,9 @@ void GLWall::PutWall(bool translucent)
 
 		bool masked;
 		bool light = gl_forcemultipass;
+#ifdef USE_GLES2
+		light = gl_ForceMultipassLights(light, gl_dynlight_shader);
+#endif
 
 		if (!gl_fixedcolormap)
 		{

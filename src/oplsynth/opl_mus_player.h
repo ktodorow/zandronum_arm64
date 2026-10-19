@@ -1,6 +1,11 @@
 #include "critsec.h"
 #include "muslib.h"
 
+#ifdef USE_GLES2
+class OPLPreparedSource;
+class PreparedSoundSource;
+#endif
+
 class OPLmusicBlock : public musicBlock
 {
 public:
@@ -22,6 +27,13 @@ protected:
 	bool Looping;
 	double LastOffset;
 	bool FullPan;
+
+#ifdef USE_GLES2
+	OPLPreparedSource *PreparedPCM;
+	PreparedSoundSource *CreatePreparedPCM();
+	void DestroyPreparedPCM();
+	bool RecordPreparedCorrection(float *pcm, int samples);
+#endif
 
 	FCriticalSection ChipAccess;
 };

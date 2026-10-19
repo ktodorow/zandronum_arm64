@@ -18,6 +18,9 @@ python3 tools/arm64/build.py build --output ../zandronum-arm64-artifacts/run-1
 ```
 
 Output must be outside the source checkout and absent or empty. Optional
+`--legacy-gl` builds desktop-GL/software fallback as `zandronum`;
+default builds native GLES as `zandronum-gles`. See [native package guide](r36s-gles.md).
+Optional
 `--jobs 2` reduces compiler concurrency. Source files are copied to a temporary
 build context, then into disposable Linux build storage. Configure/resource
 generators may change that copy; they cannot change host source. Tracked and
@@ -27,8 +30,8 @@ used as source or disposable build storage.
 
 The export contains:
 
-- `zandronum`: AArch64 client, with software and desktop OpenGL renderers compiled.
-- `zandronum.debug`: matching separate debug symbols.
+- `zandronum-gles` (default) or `zandronum` (`--legacy-gl`): AArch64 graphical client.
+- Matching `.debug` file: separate debug symbols.
 - `zandronum.pk3`, `brightmaps.pk3`, `skulltag_actors.pk3`: resources generated
   by tools executed natively inside the ARM64 builder.
 - `lib/libSDL-1.2.so.0`: private sdl12-compat library. Select with a

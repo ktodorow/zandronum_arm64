@@ -1,9 +1,9 @@
 # R36S single-player content launcher
 
 Small C++17/SDL2 menu, launched by PortMaster before Zandronum. Select a base
-WAD or PK3, combine local WAD/PK3 add-ons in explicit order, choose GL4ES/software,
+WAD or PK3, combine local WAD/PK3 add-ons in explicit order, choose native GLES/GL4ES/software,
 and save named combinations. Menu exits completely before gameplay.
-GL4ES remains default; optional software retains native-30 base-game evidence.
+Native GLES is default when installed; GL4ES/software remain selectable.
 This menu does not establish compatibility or performance of arbitrary mods.
 
 Installation needs no `apt`, package downloads or on-device compilation.
@@ -62,6 +62,12 @@ Profiles are owner data under `config/launcher/` and survive package upgrades:
 - `profiles/profile-<timestamp>.profile`: named combinations.
 - `paths.txt`: optional additional scan folders.
 
+Native upgrade changes current selection's renderer once, preserving base,
+add-ons/order/name and named profiles. `last.before-gles-v1.profile` backs up
+previous selection; `gles-default-v1` prevents repeated overrides. Choosing
+GL4ES/software later persists normally. Without native executable, legacy
+packages retain GL4ES default.
+
 Profiles use versioned quoted text; filenames may include spaces, quotes,
 backslashes and shell characters. Menu validates selected files and writes
 an atomic NUL-delimited handoff. Runner reads Bash array elements and passes
@@ -69,11 +75,14 @@ individual `-iwad` and ordered `-file` arguments; it never evaluates profile tex
 
 Plain `doom.wad`/`doom2.wad` without add-ons retain existing
 `config/zandronum.ini`, GL `saves/` and software `saves/software/`.
+Native uses `config/gles/zandronum.ini` seeded from existing config and
+`saves/gles/`; controls/audio/settings preserved on subsequent launches.
 Other combinations use a deterministic `set-<16 hex digits>` key derived
 from base path and ordered add-on paths:
 
 - `config/profiles/<key>/zandronum.ini`, copied from current base settings once.
 - `saves/profiles/<key>/gl4es/` or `saves/profiles/<key>/software/`.
+- Native: `config/profiles/<key>/gles/zandronum.ini` and `saves/profiles/<key>/gles/`.
 
 Renaming a profile keeps its saves. Changing paths or order selects another
 save/config set. Replacing a file in place keeps same set; engine save/mod

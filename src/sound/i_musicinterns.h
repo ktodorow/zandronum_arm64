@@ -270,6 +270,7 @@ class OPLMIDIDevice : public SoftSynthMIDIDevice, protected OPLmusicBlock
 {
 public:
 	OPLMIDIDevice();
+	~OPLMIDIDevice();
 	int Open(void (*callback)(unsigned int, void *, DWORD, DWORD), void *userdata);
 	void Close();
 	int GetTechnology() const;

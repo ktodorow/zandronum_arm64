@@ -134,7 +134,7 @@ Profile read_profile(const fs::path &path)
     if (!profile.id.empty() && (profile.id.rfind("profile-", 0) != 0 || profile.id.size() > 64
         || profile.id.size() <= 8 || profile.id.find_first_not_of("0123456789", 8) != std::string::npos))
         throw std::runtime_error("Invalid profile identifier");
-    if (profile.renderer != "gl4es" && profile.renderer != "software")
+    if (profile.renderer != "gl4es" && profile.renderer != "software" && profile.renderer != "gles")
         throw std::runtime_error("Unknown renderer");
     return profile;
 }
@@ -155,8 +155,8 @@ void validate(const Profile &profile)
     safe_string(profile.iwad.string());
     if (!fs::is_regular_file(profile.iwad) || !content_type(profile.iwad))
         throw std::runtime_error("Choose an existing base WAD or PK3");
-    if (profile.renderer != "gl4es" && profile.renderer != "software")
-        throw std::runtime_error("Choose GL4ES or software renderer");
+    if (profile.renderer != "gl4es" && profile.renderer != "software" && profile.renderer != "gles")
+        throw std::runtime_error("Choose native GLES, GL4ES or software renderer");
     if (profile.addons.size() > max_addons) throw std::runtime_error("Too many add-ons (maximum 128)");
     std::set<fs::path> seen{fs::canonical(profile.iwad)};
     for (const auto &path : profile.addons) {
